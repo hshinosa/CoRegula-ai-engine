@@ -1,0 +1,10 @@
+Materi Destink
+*.log
+*.tmp
+
+venv
+Materi UX.zip
+
+.env
+
+data
