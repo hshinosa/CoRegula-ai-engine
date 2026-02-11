@@ -2,9 +2,18 @@ Materi Destink
 *.log
 *.tmp
 
-venv
-Materi UX.zip
+# Virtual Environment
+venv/
+.venv/
 
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment Variables
 .env
 
-data
+# Data & Documents
+data/
+Materi UX.zip
