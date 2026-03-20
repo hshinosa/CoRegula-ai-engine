@@ -1,6 +1,6 @@
 """
-CoRegula AI-Engine
-===================
+Kolabri AI-Engine
+=================
 FastAPI backend for AI computation, RAG pipeline, and LLM integration.
 Uses GLM-4.7 (OpenAI Compatible) as the primary LLM provider.
 """
@@ -79,7 +79,7 @@ async def silence_monitor_task():
 async def lifespan(app: FastAPI):
     """Application lifespan handler for startup/shutdown events."""
     # Startup
-    logger.info("Starting CoRegula AI-Engine", version="1.0.0", env=settings.ENV)
+    logger.info("Starting Kolabri AI-Engine", version="1.0.0", env=settings.ENV)
     
     # Ensure data directories exist
     for d in [settings.CHROMA_PERSIST_DIR, "data/event_logs", "data/static/images"]:
@@ -99,7 +99,7 @@ async def lifespan(app: FastAPI):
     yield
     
     # Shutdown
-    logger.info("Shutting down CoRegula AI-Engine")
+    logger.info("Shutting down Kolabri AI-Engine")
     monitor_task.cancel()
     try:
         await monitor_task
@@ -112,7 +112,7 @@ async def lifespan(app: FastAPI):
 # Create FastAPI application
 # ✅ SEC: KOL-141 - Disable docs in production
 app = FastAPI(
-    title="CoRegula AI-Engine",
+    title="Kolabri AI-Engine",
     description="AI computation service for collaborative learning platform",
     version="1.0.0",
     docs_url="/docs" if (settings.ENV == "development" and settings.DOCS_ENABLED) else None,
@@ -213,7 +213,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 async def root():
     """Root endpoint."""
     return {
-        "service": "CoRegula AI-Engine",
+        "service": "Kolabri AI-Engine",
         "version": "1.0.0",
         "status": "running",
         "docs": "/docs" if settings.DEBUG else "disabled",

@@ -1,6 +1,6 @@
 """
 Guardrails Service - AI Safety & Content Moderation
-CoRegula AI Engine
+Kolabri AI Engine
 
 Implements safety guardrails for AI responses:
 - Academic dishonesty detection (prevent homework completion)

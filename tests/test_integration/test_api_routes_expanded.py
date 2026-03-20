@@ -40,7 +40,7 @@ def integration_app():
     from app.api.routes import router as api_router
 
     app = FastAPI(
-        title="CoRegula AI-Engine (Expanded Tests)",
+        title="Kolabri AI-Engine (Expanded Tests)",
         version="1.0.0",
         lifespan=mock_lifespan,
     )

@@ -153,7 +153,7 @@ Skenario Performance Test:
 
 Contoh:
   python run_high_perf_test.py --scenario baseline
-  python run_high_perf_test.py --scenario uji_stres --host http://prod.coregula.ai
+  python run_high_perf_test.py --scenario uji_stres --host http://prod.kolabri.ai
         """
     )
     

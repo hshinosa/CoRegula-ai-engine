@@ -1,5 +1,5 @@
 """
-Utils package for CoRegula AI Engine.
+Utils package for Kolabri AI Engine.
 """
 
 from app.utils.logger import (

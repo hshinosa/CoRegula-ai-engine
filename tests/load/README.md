@@ -1,4 +1,4 @@
-# Load Testing Suite for CoRegula AI Engine
+# Load Testing Suite for Kolabri AI Engine
 
 > Issue: **KOL-42** - Load testing performa response time AI
 
@@ -145,7 +145,7 @@ python run_load_test.py \
     --users 150 \
     --duration 15m \
     --spawn-rate 25 \
-    --host http://staging.coregula.ai:8001
+    --host http://staging.kolabri.ai:8001
 ```
 
 ### Test Specific Endpoint Tags
@@ -190,7 +190,7 @@ curl http://localhost:8001/health
 
 ### Issue: High failure rate
 
-- Periksa logs AI Engine: `docker logs coregula-ai-engine`
+- Periksa logs AI Engine: `docker logs kolabri-ai-engine`
 - Pastikan ChromaDB dan MongoDB running
 - Cek memory dan CPU usage
 

@@ -13,10 +13,10 @@ from app.services.notification_service import get_notification_service
 
 async def run_proactive_integration_test():
     """
-    Comprehensive test for all CoRegula proactive features.
+    Comprehensive test for all Kolabri proactive features.
     """
     print("=" * 70)
-    print(" CORE-REGULA PROACTIVE SYSTEM INTEGRATION TEST")
+    print(" KOLABRI PROACTIVE SYSTEM INTEGRATION TEST")
     print("=" * 70)
 
     # 0. Initialization

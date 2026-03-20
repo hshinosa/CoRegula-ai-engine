@@ -1,5 +1,5 @@
 #!/bin/bash
-# Security Audit Script for CoRegula AI Engine
+# Security Audit Script for Kolabri AI Engine
 # KOL-144: Container & Dependency Hardening
 
 set -e

@@ -28,7 +28,7 @@ class LLMResponse:
 
 class OpenAILLMService:
     SYSTEM_PROMPTS = {
-        'default': 'Anda adalah asisten AI CoRegula yang membantu mahasiswa.',
+        'default': 'Anda adalah asisten AI Kolabri yang membantu mahasiswa.',
         'rag': 'Anda adalah asisten RAG.',
         'intervention': 'Anda fasilitator diskusi.',
         'summary': 'Anda ahli ringkasan.'

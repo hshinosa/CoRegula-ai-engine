@@ -32,7 +32,7 @@ try:
         OPENAI_API_KEY='test-key',
         CORE_API_SECRET='secret',
         OPENAI_BASE_URL='https://api.openai.com/v1',  # HTTPS required
-        CORE_API_URL='https://api.coregula.com'  # HTTPS required
+        CORE_API_URL='https://api.kolabri.com'  # HTTPS required
     )
     print('PASS: Config loaded')
 except Exception as e:
@@ -51,7 +51,7 @@ try:
         OPENAI_API_KEY='test',
         CORE_API_SECRET='test',
         OPENAI_BASE_URL='http://insecure.com',
-        CORE_API_URL='https://api.coregula.com'  # HTTPS
+        CORE_API_URL='https://api.kolabri.com'  # HTTPS
     )
     print('FAIL: Should reject HTTP')
     sys.exit(1)
@@ -66,7 +66,7 @@ try:
         OPENAI_API_KEY='test',
         CORE_API_SECRET='test',
         OPENAI_BASE_URL='https://secure.com',
-        CORE_API_URL='https://api.coregula.com'
+        CORE_API_URL='https://api.kolabri.com'
     )
     print('PASS: HTTPS accepted')
 except Exception as e:
@@ -84,7 +84,7 @@ s = Settings(
     OPENAI_API_KEY='test',
     CORE_API_SECRET='test',
     OPENAI_BASE_URL='https://api.openai.com/v1',
-    CORE_API_URL='https://api.coregula.com'
+    CORE_API_URL='https://api.kolabri.com'
 )
 
 checks = {

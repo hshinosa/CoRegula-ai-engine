@@ -1,5 +1,5 @@
 """
-Load Testing Suite for CoRegula AI Engine
+Load Testing Suite for Kolabri AI Engine
 ==========================================
 
 Menggunakan Locust untuk load testing HTTP endpoint.
