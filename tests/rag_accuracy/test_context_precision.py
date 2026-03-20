@@ -324,9 +324,9 @@ REASON: [penjelasan singkat]
 # Sample test cases dengan ground truth
 SAMPLE_TEST_CASES = [
     {
-        'query': 'Apa itu CoRegula?',
+        'query': 'Apa itu Kolabri?',
         'expected_chunks': [
-            'CoRegula adalah platform AI untuk otomatisasi regulasi',
+            'Kolabri adalah platform AI untuk otomatisasi regulasi',
             'Platform ini membantu perusahaan mematuhi regulasi dengan AI'
         ]
     },

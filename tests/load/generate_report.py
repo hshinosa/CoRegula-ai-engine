@@ -459,7 +459,7 @@ def generate_html_report(stats_data, history_data, failures_data, output_path):
     </div>
     
     <footer style="text-align: center; color: #9ca3af; padding: 20px;">
-        <p>AI Engine Load Testing Suite | CoRegula Project</p>
+        <p>AI Engine Load Testing Suite | Kolabri Project</p>
     </footer>
 </body>
 </html>

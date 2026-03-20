@@ -361,7 +361,7 @@ class GoalValidator:
             ])
             
             prompt = f"""
-            Anda adalah asisten AI CoRegula yang membantu mahasiswa memperbaiki tujuan belajar mereka.
+            Anda adalah asisten AI Kolabri yang membantu mahasiswa memperbaiki tujuan belajar mereka.
             
             Tujuan saat ini: "{current_goal}"
             
