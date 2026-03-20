@@ -2772,7 +2772,7 @@ class TestRemainingBranches:
 
         def exists_patch(path):
             # Make the temp dir appear non-existent in finally block
-            if "coregula_zip_" in str(path):
+            if "kolabri_zip_" in str(path):
                 call_count["n"] += 1
                 if call_count["n"] > 5:
                     return False

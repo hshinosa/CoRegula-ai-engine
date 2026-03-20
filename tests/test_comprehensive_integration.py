@@ -769,7 +769,7 @@ class ComprehensiveIntegrationTest:
         """Run all comprehensive integration tests"""
         print("\n" + "="*80)
         print("COMPREHENSIVE INTEGRATION TEST SUITE")
-        print("CoRegula AI-Engine - Version 1.0")
+        print("Kolabri AI-Engine - Version 1.0")
         print("="*80)
         print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         

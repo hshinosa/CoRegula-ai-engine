@@ -221,7 +221,7 @@ class RAGPipeline:
                     
                     llm_response = await self.llm_service.generate(
                         prompt=query,
-                        system_prompt="""Anda adalah asisten AI CoRegula.
+                        system_prompt="""Anda adalah asisten AI Kolabri.
 Berikan respons yang ramah dan membantu untuk pertanyaan atau sapaan sederhana ini."""
                     )
                     
@@ -265,7 +265,7 @@ Berikan respons yang ramah dan membantu untuk pertanyaan atau sapaan sederhana i
                         # Generate response without context
                         llm_response = await self.llm_service.generate(
                             prompt=query,
-                            system_prompt="""Anda adalah asisten AI CoRegula.
+                            system_prompt="""Anda adalah asisten AI Kolabri.
 Tidak ada dokumen relevan yang ditemukan untuk pertanyaan ini.
 Berikan jawaban umum yang membantu dan sarankan untuk mengunggah dokumen yang relevan."""
                         )

@@ -365,29 +365,29 @@ DOCUMENT: [nomor dokumen atau NONE]
 # Sample test cases dengan ground truth lengkap
 SAMPLE_TEST_CASES = [
     {
-        'query': 'Apa itu CoRegula dan apa fungsinya?',
-        'ground_truth_answer': '''CoRegula adalah platform AI untuk otomatisasi regulasi.
+        'query': 'Apa itu Kolabri dan apa fungsinya?',
+        'ground_truth_answer': '''Kolabri adalah platform AI untuk otomatisasi regulasi.
 Platform ini membantu perusahaan mematuhi regulasi dengan menggunakan kecerdasan buatan.
 Fungsi utamanya adalah compliance monitoring, document analysis, dan automated reporting.
-CoRegula dapat menganalisis dokumen regulasi dan memberikan rekomendasi compliance.
+Kolabri dapat menganalisis dokumen regulasi dan memberikan rekomendasi compliance.
 Sistem ini juga dapat mengirim alert jika ada pelanggaran regulasi.
-Dengan CoRegula, perusahaan dapat mengurangi risiko non-compliance dan biaya operasional.'''
+Dengan Kolabri, perusahaan dapat mengurangi risiko non-compliance dan biaya operasional.'''
     },
     {
-        'query': 'Bagaimana cara mengatur izin pengguna di sistem CoRegula?',
-        'ground_truth_answer': '''Untuk mengatur izin pengguna di CoRegula, admin perlu masuk ke menu Settings > User Management > Permissions.
+        'query': 'Bagaimana cara mengatur izin pengguna di sistem Kolabri?',
+        'ground_truth_answer': '''Untuk mengatur izin pengguna di Kolabri, admin perlu masuk ke menu Settings > User Management > Permissions.
 Dari sana, admin dapat menambah, mengubah, atau menghapus izin pengguna.
-CoRegula menggunakan sistem role-based access control (RBAC) dengan role seperti Admin, Manager, dan User.
+Kolabri menggunakan sistem role-based access control (RBAC) dengan role seperti Admin, Manager, dan User.
 Setiap role memiliki izin yang berbeda-beda sesuai dengan tugas dan tanggung jawabnya.
 Admin dapat juga membuat custom role dengan izin yang spesifik.
 Semua perubahan izin akan tercatat dalam audit log untuk keperluan compliance.'''
     },
     {
-        'query': 'Apa saja fitur security yang dimiliki CoRegula?',
-        'ground_truth_answer': '''CoRegula memiliki fitur keamanan yang kuat untuk melindungi data pengguna.
+        'query': 'Apa saja fitur security yang dimiliki Kolabri?',
+        'ground_truth_answer': '''Kolabri memiliki fitur keamanan yang kuat untuk melindungi data pengguna.
 Data dienkripsi menggunakan AES-256 untuk data at rest dan TLS 1.3 untuk data in transit.
 Sistem mematuhi standar keamanan ISO 27001 dan SOC 2 Type II.
-CoRegula juga mendukung single sign-on (SSO) dengan SAML 2.0 dan OAuth 2.0.
+Kolabri juga mendukung single sign-on (SSO) dengan SAML 2.0 dan OAuth 2.0.
 Ada fitur two-factor authentication (2FA) untuk proteksi tambahan.
 Semua akses ke sistem dicatat dalam audit log yang immutable.'''
     }

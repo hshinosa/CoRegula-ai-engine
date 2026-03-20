@@ -322,8 +322,8 @@ REASONING: [penjelasan singkat]
 # Sample test cases untuk validasi
 SAMPLE_TEST_CASES = [
     {
-        'query': 'Apa itu CoRegula dan bagaimana cara kerjanya?',
-        'answer': 'CoRegula adalah platform AI untuk otomatisasi regulasi. Cara kerjanya adalah dengan menganalisis dokumen regulasi dan memberikan rekomendasi compliance.'
+        'query': 'Apa itu Kolabri dan bagaimana cara kerjanya?',
+        'answer': 'Kolabri adalah platform AI untuk otomatisasi regulasi. Cara kerjanya adalah dengan menganalisis dokumen regulasi dan memberikan rekomendasi compliance.'
     },
     {
         'query': 'Bagaimana cara mengatur izin pengguna di sistem?',
@@ -335,7 +335,7 @@ SAMPLE_TEST_CASES = [
     },
     {
         'query': 'Berapa biaya berlangganan untuk enterprise?',
-        'answer': 'Untuk informasi harga enterprise, silakan hubungi tim sales kami di sales@coregula.com atau isi form di halaman Contact Us.'
+        'answer': 'Untuk informasi harga enterprise, silakan hubungi tim sales kami di sales@kolabri.com atau isi form di halaman Contact Us.'
     },
     {
         'query': 'Apakah data saya aman di sistem ini?',

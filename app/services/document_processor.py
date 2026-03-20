@@ -509,7 +509,7 @@ class DocumentProcessor:
 
         try:
             # Create temporary directory for extraction (saves memory vs in-memory processing)
-            temp_dir = tempfile.mkdtemp(prefix="coregula_zip_")
+            temp_dir = tempfile.mkdtemp(prefix="kolabri_zip_")
             zip_path = os.path.join(temp_dir, "archive.zip")
 
             # Write ZIP to temp file first
