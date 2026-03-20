@@ -1,6 +1,6 @@
 """
 Services Package - MVP Phase 1-1.5
-CoRegula AI Engine
+Kolabri AI Engine
 
 All AI services for document processing, RAG, and chat intervention.
 """

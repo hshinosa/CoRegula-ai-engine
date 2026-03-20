@@ -1,4 +1,4 @@
-# CoRegula AI-Engine Requirements
+# Kolabri AI-Engine Requirements
 # Generated from actual venv installation - 2026-02-06
 
 # Core Framework

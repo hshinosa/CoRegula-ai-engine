@@ -1,5 +1,5 @@
 """
-Test Configuration and Shared Fixtures for CoRegula AI-Engine
+Test Configuration and Shared Fixtures for Kolabri AI-Engine
 ==========================================================
 
 Uses patterns from python-testing-patterns skill:

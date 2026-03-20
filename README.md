@@ -1,6 +1,6 @@
-# CoRegula AI-Engine
+# Kolabri AI-Engine
 
-AI computation service for the CoRegula collaborative learning platform. Built with FastAPI, Python 3.11, and Google Gemini 2.0 Flash.
+AI computation service for the Kolabri collaborative learning platform. Built with FastAPI, Python 3.11, and Google Gemini 2.0 Flash.
 
 ## 🎯 Purpose
 
@@ -84,7 +84,7 @@ HOST=0.0.0.0
 PORT=8001
 CHROMA_PERSIST_DIR=./data/chroma
 CORE_API_URL=http://localhost:3000
-MONGO_URI=mongodb://localhost:27017/coregula
+MONGO_URI=mongodb://localhost:27017/kolabri
 ```
 
 ### 4. Run Development Server
@@ -373,7 +373,7 @@ GEMINI_EMBEDDING_MODEL=text-embedding-004
 
 # ChromaDB
 CHROMA_PERSIST_DIR=./data/chroma
-CHROMA_COLLECTION_PREFIX=coregula_
+CHROMA_COLLECTION_PREFIX=kolabri_
 
 # Document Processing
 MAX_UPLOAD_SIZE_MB=50
@@ -389,7 +389,7 @@ RELEVANCE_THRESHOLD=0.3
 # Integration
 CORE_API_URL=http://localhost:3000
 CORE_API_SECRET=optional-bearer-token
-MONGO_URI=mongodb://localhost:27017/coregula
+MONGO_URI=mongodb://localhost:27017/kolabri
 
 # Logging
 LOG_LEVEL=info
@@ -424,14 +424,14 @@ uvicorn main:app --host 0.0.0.0 --port 8001 --workers 4
 
 ```bash
 # Build
-docker build -t coregula-ai .
+docker build -t kolabri-ai .
 
 # Run
 docker run -p 8001:8001 \
   -e GOOGLE_API_KEY=your-key \
   -e CORE_API_URL=http://core-api:3000 \
   -v ai_engine_data:/app/data \
-  coregula-ai
+  kolabri-ai
 ```
 
 ### Docker Compose
@@ -555,8 +555,8 @@ MAX_UPLOAD_SIZE_MB=10
 
 ## 📄 License
 
-MIT License - CoRegula Project
+MIT License - Kolabri Project
 
 ## 👥 Support
 
-For issues, open an issue in the CoRegula repository.
+For issues, open an issue in the Kolabri repository.

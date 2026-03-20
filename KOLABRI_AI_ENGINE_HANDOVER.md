@@ -1,4 +1,4 @@
-# CoRegula AI-Engine: Master Technical Handover & Integration Guide
+# Kolabri AI-Engine: Master Technical Handover & Integration Guide
 
 **Date:** 2026-02-06  
 **Status:** ✅ PRODUCTION READY | EXPERT HARDENED | 100% PROPOSAL ALIGNED
@@ -6,7 +6,7 @@
 ---
 
 ## 1. Executive Summary
-CoRegula AI-Engine adalah core computation engine yang mengintegrasikan **Generative AI (GLM-4.7)** dengan prinsip **Socially-Shared Regulated Learning (SSRL)**. Sistem ini dirancang untuk mendampingi diskusi kelompok secara proaktif, mengukur kualitas kognitif mahasiswa (HOT), dan menyediakan dataset yang kaya untuk analisis **Process Mining**.
+Kolabri AI-Engine adalah core computation engine yang mengintegrasikan **Generative AI (GLM-4.7)** dengan prinsip **Socially-Shared Regulated Learning (SSRL)**. Sistem ini dirancang untuk mendampingi diskusi kelompok secara proaktif, mengukur kualitas kognitif mahasiswa (HOT), dan menyediakan dataset yang kaya untuk analisis **Process Mining**.
 
 ---
 
@@ -106,10 +106,10 @@ python -m pytest tests/test_integration/test_api_routes.py -v
 ```powershell
 cd ai-engine
 $env:PYTHONPATH="."
-python -B tests/test_coregula_proactive.py
+python -B tests/test_kolabri_proactive.py
 ```
 
 ---
-**Lead Developer:** CoRegula AI Agent (Droid)  
+**Lead Developer:** Kolabri AI Agent (Droid)  
 **Technical Signature:** `REF-20260206-MASTER-ULTIMATE-V2`  
 **Verification:** 100% Passed (Includes Plan-vs-Reality, Multimodal, Webhook Security, and Memory Protection)

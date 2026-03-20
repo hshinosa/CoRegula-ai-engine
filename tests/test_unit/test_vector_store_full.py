@@ -64,12 +64,12 @@ async def test_get_collection_stats_robust(vector_store, mock_chroma):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_list_collections_robust(vector_store, mock_chroma):
-    c1 = MagicMock(); c1.name = 'coregula_c1'; c1.count.return_value = 5; c1.metadata = {'m': 1}
+    c1 = MagicMock(); c1.name = 'kolabri_c1'; c1.count.return_value = 5; c1.metadata = {'m': 1}
     mock_chroma.list_collections.return_value = [c1]
     res = await vector_store.list_collections()
     assert len(res) == 1
     # Check what the actual key is
-    assert res[0]['name'] == 'coregula_c1'
+    assert res[0]['name'] == 'kolabri_c1'
 
 @pytest.mark.unit
 @pytest.mark.asyncio

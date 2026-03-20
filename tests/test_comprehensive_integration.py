@@ -1,5 +1,5 @@
 """
-Comprehensive Integration Test Suite for CoRegula AI-Engine
+Comprehensive Integration Test Suite for Kolabri AI-Engine
 
 This test suite performs comprehensive integration testing including:
 1. MongoDB connection and operations
@@ -8,7 +8,7 @@ This test suite performs comprehensive integration testing including:
 4. Module integrations end-to-end
 5. Performance testing
 
-Author: CoRegula AI-Engine Team
+Author: Kolabri AI-Engine Team
 Date: 2026-02-05
 Version: 1.0
 """

@@ -56,7 +56,7 @@ class Settings(BaseSettings):
 
     # Vector Database (ChromaDB)
     CHROMA_PERSIST_DIR: str = "./data/chroma"
-    CHROMA_COLLECTION_PREFIX: str = "coregula"
+    CHROMA_COLLECTION_PREFIX: str = "kolabri"
 
     # Document Processing
     MAX_FILE_SIZE_MB: int = 10
@@ -94,7 +94,7 @@ class Settings(BaseSettings):
     SCAFFOLDING_MAX_MESSAGES: int = 20
 
     # Core-API Integration
-    CORE_API_URL: str = "https://api.coregula.com"  # SEC: HTTPS default
+    CORE_API_URL: str = "https://api.kolabri.com"  # SEC: HTTPS default
     CORE_API_SECRET: str  # SEC: Required, no default
 
     # Logging
@@ -103,7 +103,7 @@ class Settings(BaseSettings):
 
     # MongoDB Configuration
     MONGO_URI: str = "mongodb://localhost:27017"
-    MONGO_DB_NAME: str = "coregula"
+    MONGO_DB_NAME: str = "kolabri"
     ENABLE_MONGODB_LOGGING: bool = True
     
     # MongoDB Connection Pooling (KOL-138)

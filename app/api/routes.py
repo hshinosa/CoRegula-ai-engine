@@ -1,6 +1,6 @@
 """
 API Routes - MVP Phase 1-1.5
-CoRegula AI Engine
+Kolabri AI Engine
 
 FastAPI router with all API endpoints.
 """

@@ -91,7 +91,7 @@ class Orchestrator:
             # Log Bot Response
             await self.mongo_logger.log_activity({
                 "CaseID": case_id, "Activity": "Bot_Response", "Timestamp": datetime.now(),
-                "Resource": "CoRegula_Bot", "Lifecycle": "complete",
+                "Resource": "Kolabri_Bot", "Lifecycle": "complete",
                 "Attributes": {
                     "original_text": bot_reply, "srl_object": srl_obj, "educational_category": "Instructional",
                     "scaffolding_trigger": rag_result.scaffolding_triggered, "action_taken": "FETCH" if rag_result.sources else "NO_FETCH"

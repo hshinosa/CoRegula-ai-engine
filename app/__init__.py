@@ -1,1 +1,1 @@
-# CoRegula AI-Engine App Package
+# Kolabri AI-Engine App Package

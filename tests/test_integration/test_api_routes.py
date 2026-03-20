@@ -43,7 +43,7 @@ def integration_app():
     from app.api.routes import router as api_router
 
     app = FastAPI(
-        title="CoRegula AI-Engine (Test)",
+        title="Kolabri AI-Engine (Test)",
         version="1.0.0",
         lifespan=mock_lifespan,
     )
@@ -61,7 +61,7 @@ def integration_app():
     @app.get("/")
     async def root():
         return {
-            "service": "CoRegula AI-Engine",
+            "service": "Kolabri AI-Engine",
             "version": "1.0.0",
             "status": "running",
             "docs": "/docs",
@@ -131,7 +131,7 @@ def test_root_endpoint(client):
 
     assert response.status_code == 200
     data = response.json()
-    assert data["service"] == "CoRegula AI-Engine"
+    assert data["service"] == "Kolabri AI-Engine"
     assert data["version"] == "1.0.0"
     assert data["status"] == "running"
 
