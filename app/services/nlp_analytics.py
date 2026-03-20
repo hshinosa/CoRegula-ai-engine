@@ -1,14 +1,10 @@
 """
-NLP Analytics Service - Engagement & SSRL Metrics
-CoRegula AI Engine
-
-Implements Text Mining and NLP techniques for automatic engagement classification
-based on research methods for analyzing group learning engagement.
-
-Features:
-- Lexical Variety (SSRL metric for discussion quality)
-- Higher-Order Thinking (HOT) detection
-- Engagement Type classification (Cognitive, Behavioral, Emotional)
+NLP Analytics Service
+=====================
+Implements text mining techniques for learning engagement classification:
+- Lexical Variety (TTR)
+- Higher-Order Thinking (HOT) Detection
+- Engagement Type Classification (Cognitive, Behavioral, Emotional)
 """
 
 from typing import Dict, Any, List, Optional
@@ -17,6 +13,7 @@ from enum import Enum
 import re
 
 from app.core.logging import get_logger
+from app.utils.text_processor import normalize_text, clean_for_ttr
 
 logger = get_logger(__name__)
 
@@ -150,11 +147,43 @@ class EngagementAnalyzer:
         "seperti", "jika", "apa", "siapa", "mana", "kapan"
     }
     
+    # Common educational objects/topics for SRL tracking (Indonesian)
+    SRL_OBJECT_KEYWORDS = [
+        "database", "redis", "caching", "sql", "postgresql", "mongodb",
+        "api", "fastapi", "rest", "endpoint", "frontend", "backend",
+        "react", "vue", "angular", "javascript", "python", "java",
+        "algorithm", "complexity", "big o", "sort", "search",
+        "design pattern", "singleton", "factory", "observer",
+        "test", "unit test", "integration", "deployment", "docker",
+        "kubernetes", "cloud", "aws", "azure", "gcp"
+    ]
+
     def __init__(self):
         """Initialize the engagement analyzer."""
         self.hot_triggers = set(self.HOT_TRIGGERS_ID + self.HOT_TRIGGERS_EN)
         self.emotional_words = set(self.EMOTIONAL_INDICATORS)
+        self.srl_keywords = set(self.SRL_OBJECT_KEYWORDS)
         logger.info("engagement_analyzer_initialized")
+
+    def extract_srl_object(self, text: str, default: str = "General_Discussion") -> str:
+        """
+        Extract the primary learning object from the text.
+        
+        Simple heuristic: check for technical keywords.
+        """
+        text_lower = text.lower()
+        found = []
+        for keyword in self.SRL_OBJECT_KEYWORDS:
+            if keyword in text_lower:
+                found.append(keyword.capitalize())
+        
+        if found:
+            # Return the first 2 objects found
+            return ", ".join(found[:2])
+        
+        # Fallback: extract capitalized words that aren't at the start (simple proper noun heuristic)
+        # Or just return default
+        return default
     
     def analyze_interaction(self, text: str) -> EngagementAnalysis:
         """
@@ -166,6 +195,9 @@ class EngagementAnalyzer:
         Returns:
             EngagementAnalysis with all computed metrics
         """
+        # Normalize text first
+        text = normalize_text(text)
+        
         if not text or not text.strip():
             return EngagementAnalysis(
                 lexical_variety=0.0,
@@ -179,12 +211,16 @@ class EngagementAnalyzer:
         
         text_lower = text.lower()
         
-        # Tokenize and clean
+        # Tokenize and clean for Lexical Variety
+        ttr_clean_text = clean_for_ttr(text)
+        words_for_lexical = self._tokenize(ttr_clean_text)
+        
+        # Original tokenization for word count
         words = self._tokenize(text_lower)
         word_count = len(words)
         
         # Filter stopwords for lexical analysis
-        meaningful_words = [w for w in words if w not in self.STOPWORDS_ID and len(w) > 2]
+        meaningful_words = [w for w in words_for_lexical if w not in self.STOPWORDS_ID and len(w) > 1]
         unique_words = len(set(meaningful_words))
         
         # 1. Calculate Lexical Variety (Type-Token Ratio)
@@ -261,38 +297,25 @@ class EngagementAnalyzer:
         }
     
     def get_discussion_quality_score(self, texts: List[str]) -> Dict[str, Any]:
-        """
-        Calculate overall discussion quality score.
-        
-        Args:
-            texts: List of discussion messages
+        """Expert calculation of discussion quality with SSRL weights."""
+        if not texts:
+            return {"quality_score": 0.0, "lexical_score": 0.0, "hot_score": 0.0, "cognitive_ratio": 0.0, "recommendation": "Belum ada data diskusi."}
             
-        Returns:
-            Quality score with breakdown
-        """
-        batch_analysis = self.analyze_batch(texts)
+        b = self.analyze_batch(texts)
         
-        # Quality formula: weighted combination of metrics
-        lexical_score = min(batch_analysis["avg_lexical_variety"] * 100, 100)
-        hot_score = batch_analysis["hot_percentage"]
-        cognitive_ratio = (
-            batch_analysis["engagement_distribution"].get("cognitive", 0) / 
-            max(batch_analysis["count"], 1)
-        ) * 100
+        # Weighted metric (30% Lexical, 40% HOT, 30% Cognitive Engagement)
+        lex_score = min(b["avg_lexical_variety"] * 100, 100)
+        hot_score = b["hot_percentage"]
+        cog_ratio = (b["engagement_distribution"].get("cognitive", 0) / b["count"]) * 100
         
-        # Weighted quality score
-        quality_score = (
-            lexical_score * 0.3 +
-            hot_score * 0.4 +
-            cognitive_ratio * 0.3
-        )
+        q_score = (lex_score * 0.3) + (hot_score * 0.4) + (cog_ratio * 0.3)
         
         return {
-            "quality_score": round(quality_score, 1),
-            "lexical_score": round(lexical_score, 1),
+            "quality_score": round(q_score, 1),
+            "lexical_score": round(lex_score, 1),
             "hot_score": round(hot_score, 1),
-            "cognitive_ratio": round(cognitive_ratio, 1),
-            "recommendation": self._get_quality_recommendation(quality_score)
+            "cognitive_ratio": round(cog_ratio, 1),
+            "recommendation": self._get_quality_recommendation(q_score)
         }
     
     def _tokenize(self, text: str) -> List[str]:
@@ -344,7 +367,7 @@ class EngagementAnalyzer:
         # Check for emotional indicators first
         emotional_count = sum(1 for word in self.emotional_words if word in text)
         
-        if emotional_count >= 2:
+        if emotional_count >= 1: # Reduced from 2 for better detection in short text
             return EngagementType.EMOTIONAL
         
         # Cognitive if HOT detected
@@ -361,11 +384,11 @@ class EngagementAnalyzer:
         is_hot: bool
     ) -> float:
         """Calculate confidence in the analysis."""
-        if word_count < 5:
+        if word_count <= 5: # <= instead of <
             return 0.3
-        elif word_count < 15:
+        elif word_count <= 15:
             return 0.5
-        elif word_count < 50:
+        elif word_count <= 50:
             return 0.7
         else:
             return 0.9

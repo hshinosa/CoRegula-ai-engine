@@ -149,3 +149,10 @@ cffi==2.0.0
 filelock==3.20.3
 fsspec==2026.1.0
 build==1.4.0
+
+# Security & Rate Limiting (KOL-142c)
+slowapi==0.1.9
+
+# Security Audit Tools
+pip-audit==2.7.3
+bandit==1.7.9

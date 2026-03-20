@@ -1,23 +1,24 @@
 """
-Chat Intervention Service - MVP Phase 1-1.5
-CoRegula AI Engine
-
-Monitors chat conversations and provides AI-driven interventions.
+Chat Intervention Service
+=========================
+Monitors group conversations and generates AI-driven pedagogical interventions.
+Part of the Socially-Shared Regulated Learning (SSRL) support system.
 """
 
-from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from typing import Any, Dict, List, Optional
 
 from app.core.logging import get_logger
-from app.services.llm import get_llm_service, GeminiLLMService
+from app.services.llm import OpenAILLMService, get_llm_service
 
 logger = get_logger(__name__)
 
 
 class InterventionType(str, Enum):
     """Types of chat interventions."""
+
     REDIRECT = "redirect"  # Redirect off-topic discussions
     PROMPT = "prompt"  # Provide discussion prompts
     SUMMARIZE = "summarize"  # Summarize discussion
@@ -29,6 +30,7 @@ class InterventionType(str, Enum):
 @dataclass
 class InterventionResult:
     """Result from intervention generation."""
+
     message: str
     intervention_type: InterventionType
     confidence: float
@@ -41,42 +43,39 @@ class InterventionResult:
 class ChatInterventionService:
     """
     Service for generating AI interventions in chat conversations.
-    
+
     Features:
     - Detect when intervention is needed
     - Generate appropriate intervention messages
     - Track intervention effectiveness (future)
     """
-    
+
     # Thresholds for intervention triggers
     OFF_TOPIC_THRESHOLD = 0.6
     INACTIVITY_THRESHOLD_MINUTES = 30
     MINIMUM_MESSAGES_FOR_SUMMARY = 10
-    
-    def __init__(
-        self,
-        llm_service: Optional[GeminiLLMService] = None
-    ):
+
+    def __init__(self, llm_service: Optional[OpenAILLMService] = None):
         """Initialize intervention service."""
         self.llm_service = llm_service or get_llm_service()
         logger.info("chat_intervention_service_initialized")
-    
+
     async def analyze_and_intervene(
         self,
         messages: List[Dict[str, Any]],
         topic: str,
         chat_room_id: str,
-        last_intervention_time: Optional[datetime] = None
+        last_intervention_time: Optional[datetime] = None,
     ) -> InterventionResult:
         """
         Analyze chat and determine if intervention is needed.
-        
+
         Args:
             messages: Recent chat messages
             topic: Expected discussion topic
             chat_room_id: Chat room identifier
             last_intervention_time: When last intervention occurred
-            
+
         Returns:
             InterventionResult with intervention decision
         """
@@ -87,19 +86,19 @@ class ChatInterventionService:
                 confidence=0,
                 should_intervene=False,
                 reason="No messages to analyze",
-                success=True
+                success=True,
             )
-        
+
         # Check various intervention triggers
         triggers = await self._check_triggers(
             messages=messages,
             topic=topic,
-            last_intervention_time=last_intervention_time
+            last_intervention_time=last_intervention_time,
         )
-        
+
         # Determine best intervention type
         intervention_type, confidence, reason = self._select_intervention(triggers)
-        
+
         if not triggers.get("should_intervene", False):
             return InterventionResult(
                 message="",
@@ -107,24 +106,24 @@ class ChatInterventionService:
                 confidence=confidence,
                 should_intervene=False,
                 reason=reason,
-                success=True
+                success=True,
             )
-        
+
         # Generate intervention message
         try:
             llm_response = await self.llm_service.generate_intervention(
                 chat_messages=messages,
                 intervention_type=intervention_type.value,
-                topic=topic
+                topic=topic,
             )
-            
+
             logger.info(
                 "intervention_generated",
                 chat_room=chat_room_id,
                 type=intervention_type.value,
-                confidence=confidence
+                confidence=confidence,
             )
-            
+
             return InterventionResult(
                 message=llm_response.content,
                 intervention_type=intervention_type,
@@ -132,16 +131,14 @@ class ChatInterventionService:
                 should_intervene=True,
                 reason=reason,
                 success=llm_response.success,
-                error=llm_response.error
+                error=llm_response.error,
             )
-            
+
         except Exception as e:
             logger.error(
-                "intervention_generation_failed",
-                error=str(e),
-                chat_room=chat_room_id
+                "intervention_generation_failed", error=str(e), chat_room=chat_room_id
             )
-            
+
             return InterventionResult(
                 message="",
                 intervention_type=intervention_type,
@@ -149,21 +146,19 @@ class ChatInterventionService:
                 should_intervene=False,
                 reason=f"Generation failed: {str(e)}",
                 success=False,
-                error=str(e)
+                error=str(e),
             )
-    
+
     async def generate_summary(
-        self,
-        messages: List[Dict[str, Any]],
-        chat_room_id: str
+        self, messages: List[Dict[str, Any]], chat_room_id: str
     ) -> InterventionResult:
         """
         Generate a discussion summary.
-        
+
         Args:
             messages: Messages to summarize
             chat_room_id: Chat room identifier
-            
+
         Returns:
             InterventionResult with summary
         """
@@ -174,21 +169,18 @@ class ChatInterventionService:
                 confidence=1.0,
                 should_intervene=False,
                 reason=f"Need at least {self.MINIMUM_MESSAGES_FOR_SUMMARY} messages",
-                success=True
+                success=True,
             )
-        
+
         try:
             llm_response = await self.llm_service.generate_summary(
-                messages=messages,
-                include_action_items=True
+                messages=messages, include_action_items=True
             )
-            
+
             logger.info(
-                "summary_generated",
-                chat_room=chat_room_id,
-                message_count=len(messages)
+                "summary_generated", chat_room=chat_room_id, message_count=len(messages)
             )
-            
+
             return InterventionResult(
                 message=llm_response.content,
                 intervention_type=InterventionType.SUMMARIZE,
@@ -196,16 +188,14 @@ class ChatInterventionService:
                 should_intervene=True,
                 reason="Summary requested",
                 success=llm_response.success,
-                error=llm_response.error
+                error=llm_response.error,
             )
-            
+
         except Exception as e:
             logger.error(
-                "summary_generation_failed",
-                error=str(e),
-                chat_room=chat_room_id
+                "summary_generation_failed", error=str(e), chat_room=chat_room_id
             )
-            
+
             return InterventionResult(
                 message="",
                 intervention_type=InterventionType.SUMMARIZE,
@@ -213,23 +203,20 @@ class ChatInterventionService:
                 should_intervene=False,
                 reason=f"Summary failed: {str(e)}",
                 success=False,
-                error=str(e)
+                error=str(e),
             )
-    
+
     async def generate_discussion_prompt(
-        self,
-        topic: str,
-        context: Optional[str] = None,
-        difficulty: str = "medium"
+        self, topic: str, context: Optional[str] = None, difficulty: str = "medium"
     ) -> InterventionResult:
         """
         Generate a discussion prompt for the topic.
-        
+
         Args:
             topic: Discussion topic
             context: Optional additional context
             difficulty: Prompt difficulty (easy, medium, hard)
-            
+
         Returns:
             InterventionResult with discussion prompt
         """
@@ -239,22 +226,33 @@ Tingkat kesulitan: {difficulty}
 """
         if context:
             prompt += f"\nKonteks tambahan: {context}"
-        
+
         prompt += """
 
 Buatkan 1-2 pertanyaan yang:
 - Mendorong pemikiran kritis
 - Mengaitkan dengan pengalaman nyata
 - Membuka ruang untuk berbagai perspektif"""
-        
+
         try:
             llm_response = await self.llm_service.generate(
                 prompt=prompt,
                 system_prompt="""Anda adalah fasilitator diskusi akademik.
 Buat pertanyaan yang memicu diskusi mendalam dan bermakna.""",
-                temperature=0.8  # More creative for prompts
+                temperature=0.8,  # More creative for prompts
             )
-            
+
+            if not llm_response.success:
+                return InterventionResult(
+                    message="",
+                    intervention_type=InterventionType.PROMPT,
+                    confidence=0,
+                    should_intervene=False,
+                    reason=f"Prompt generation failed: {llm_response.error}",
+                    success=False,
+                    error=llm_response.error,
+                )
+
             return InterventionResult(
                 message=llm_response.content,
                 intervention_type=InterventionType.PROMPT,
@@ -262,9 +260,9 @@ Buat pertanyaan yang memicu diskusi mendalam dan bermakna.""",
                 should_intervene=True,
                 reason="Prompt requested",
                 success=llm_response.success,
-                error=llm_response.error
+                error=llm_response.error,
             )
-            
+
         except Exception as e:
             return InterventionResult(
                 message="",
@@ -273,14 +271,14 @@ Buat pertanyaan yang memicu diskusi mendalam dan bermakna.""",
                 should_intervene=False,
                 reason=f"Prompt generation failed: {str(e)}",
                 success=False,
-                error=str(e)
+                error=str(e),
             )
-    
+
     async def _check_triggers(
         self,
         messages: List[Dict[str, Any]],
         topic: str,
-        last_intervention_time: Optional[datetime]
+        last_intervention_time: Optional[datetime],
     ) -> Dict[str, Any]:
         """Check various intervention triggers."""
         triggers = {
@@ -289,88 +287,80 @@ Buat pertanyaan yang memicu diskusi mendalam dan bermakna.""",
             "off_topic_score": 0.0,
             "inactive": False,
             "needs_summary": False,
-            "low_engagement": False
+            "low_engagement": False,
         }
-        
+
         # Check for inactivity
         if messages:
             last_message_time = messages[-1].get("timestamp")
             if last_message_time:
                 if isinstance(last_message_time, str):
-                    last_message_time = datetime.fromisoformat(last_message_time.replace("Z", "+00:00"))
-                
-                minutes_since = (datetime.now(last_message_time.tzinfo) - last_message_time).total_seconds() / 60
+                    last_message_time = datetime.fromisoformat(
+                        last_message_time.replace("Z", "+00:00")
+                    )
+
+                minutes_since = (
+                    datetime.now(last_message_time.tzinfo) - last_message_time
+                ).total_seconds() / 60
                 if minutes_since > self.INACTIVITY_THRESHOLD_MINUTES:
                     triggers["inactive"] = True
                     triggers["should_intervene"] = True
-        
+
         # Check if enough messages for summary
         if len(messages) >= self.MINIMUM_MESSAGES_FOR_SUMMARY:
             # Check if no recent summary
             if last_intervention_time:
                 messages_since_intervention = [
-                    m for m in messages
-                    if m.get("timestamp") and 
-                    datetime.fromisoformat(m["timestamp"].replace("Z", "+00:00")) > last_intervention_time
+                    m
+                    for m in messages
+                    if m.get("timestamp")
+                    and datetime.fromisoformat(m["timestamp"].replace("Z", "+00:00"))
+                    > last_intervention_time
                 ]
-                if len(messages_since_intervention) >= self.MINIMUM_MESSAGES_FOR_SUMMARY:
+                if (
+                    len(messages_since_intervention)
+                    >= self.MINIMUM_MESSAGES_FOR_SUMMARY
+                ):
                     triggers["needs_summary"] = True
-        
+
         # Simple off-topic detection (can be enhanced with embeddings)
         if topic and len(messages) >= 5:
-            recent_content = " ".join([
-                m.get("content", "") for m in messages[-5:]
-            ]).lower()
-            
+            recent_content = " ".join(
+                [m.get("content", "") for m in messages[-5:]]
+            ).lower()
+
             topic_words = topic.lower().split()
             matches = sum(1 for word in topic_words if word in recent_content)
             topic_relevance = matches / len(topic_words) if topic_words else 1
-            
+
             triggers["off_topic_score"] = 1 - topic_relevance
             if topic_relevance < 0.3:  # Less than 30% topic words found
                 triggers["off_topic"] = True
                 triggers["should_intervene"] = True
-        
+
         return triggers
-    
+
     def _select_intervention(
-        self,
-        triggers: Dict[str, Any]
+        self, triggers: Dict[str, Any]
     ) -> tuple[InterventionType, float, str]:
         """Select the best intervention type based on triggers."""
         if triggers.get("off_topic"):
             return (
                 InterventionType.REDIRECT,
                 triggers.get("off_topic_score", 0.5),
-                "Discussion appears off-topic"
+                "Discussion appears off-topic",
             )
-        
+
         if triggers.get("inactive"):
-            return (
-                InterventionType.ENCOURAGE,
-                0.8,
-                "Chat has been inactive"
-            )
-        
+            return (InterventionType.ENCOURAGE, 0.8, "Chat has been inactive")
+
         if triggers.get("needs_summary"):
-            return (
-                InterventionType.SUMMARIZE,
-                0.7,
-                "Enough messages for summary"
-            )
-        
+            return (InterventionType.SUMMARIZE, 0.7, "Enough messages for summary")
+
         if triggers.get("low_engagement"):
-            return (
-                InterventionType.PROMPT,
-                0.6,
-                "Low engagement detected"
-            )
-        
-        return (
-            InterventionType.ENCOURAGE,
-            0.0,
-            "No intervention needed"
-        )
+            return (InterventionType.PROMPT, 0.6, "Low engagement detected")
+
+        return (InterventionType.ENCOURAGE, 0.0, "No intervention needed")
 
 
 # Singleton instance

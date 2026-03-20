@@ -5,20 +5,46 @@ CoRegula AI Engine
 FastAPI router with all API endpoints.
 """
 
+import gc
+import os
+import re
 import uuid
+import tempfile
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    UploadFile,
+    File,
+    Form,
+    HTTPException,
+    Query,
+)
+from fastapi.responses import JSONResponse, Response
 
 from app.core.config import settings
 from app.core.logging import get_logger
-from app.services.pdf_processor import get_pdf_processor
 from app.services.document_processor import get_document_processor
-from app.services.vector_store import get_vector_store
-from app.services.rag import get_rag_pipeline
+
+# [PRIORITY 1] Optimized services dengan connection pooling & caching
+from app.services.llm_optimized import get_llm_service
+from app.services.rag_optimized import get_optimized_rag_pipeline as get_rag_pipeline
+
+# [PRIORITY 2] Vector store caching & MongoDB pooling
+from app.services.vector_store_optimized import get_optimized_vector_store as get_vector_store
+from app.services.mongodb_logger_optimized import get_optimized_mongodb_logger as get_mongo_logger
+from app.core.cache_analyzer import get_cache_analyzer
+
+# [PRIORITY 3] Batching & Circuit Breaker
+from app.services.batch_llm import get_batch_llm_service
+from app.core.circuit_breaker import get_circuit_breaker
+from app.services.circuit_breaker import get_llm_circuit_breaker
+from app.services.monitoring import get_monitor
+from app.services.reranker import get_reranker
+
 from app.services.intervention import get_intervention_service, InterventionType
 from app.services.orchestration import get_orchestrator
 from app.services.nlp_analytics import get_engagement_analyzer
@@ -57,46 +83,72 @@ from app.api.schemas import (
     GuardrailCheckResponse,
 )
 from app.core.guardrails import get_guardrails, GuardrailAction
+from app.services.export_service import get_export_service
+from app.services.efficiency_guard import get_efficiency_guard
+
+# [PRIORITY 1] Batch routes untuk high throughput
+from app.api.batch_routes import router as batch_router
 
 logger = get_logger(__name__)
 
-# Create router
+# Router for API endpoints
 router = APIRouter()
+
+# Course ID validation pattern (alphanumeric, underscore, hyphen only)
+COURSE_ID_PATTERN = re.compile(r'^[a-zA-Z0-9_-]+$')
+
+
+def validate_course_id(course_id: str) -> str:
+    """
+    Validate course_id format to prevent injection attacks.
+    
+    Args:
+        course_id: The course ID to validate
+        
+    Returns:
+        The validated course_id
+        
+    Raises:
+        HTTPException: If course_id contains invalid characters
+    """
+    if not course_id or not COURSE_ID_PATTERN.match(course_id):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid course ID format. Only alphanumeric characters, underscores, and hyphens are allowed."
+        )
+    return course_id
+
+# Include batch routes
+router.include_router(batch_router, prefix="/ask", tags=["Batch Processing"])
 
 
 # ============== Core-API Integration Endpoints ==============
 # These endpoints are called by Core-API (Express.js backend)
 
+
 @router.post(
     "/ask",
     response_model=AskResponse,
     tags=["Core-API Integration"],
-    summary="Answer question using RAG (for chat @AI mention)"
+    summary="Answer question using RAG (for chat @AI mention)",
 )
 async def ask_question(request: AskRequest):
     """
     Answer a question using RAG - called when user mentions @AI in chat.
-    
-    This is the primary endpoint used by Core-API for chat AI responses.
-    
-    Args:
-        request: AskRequest with query, course_id, user_name, chat_space_id
-    
-    Returns:
-        AskResponse with answer field
     """
     try:
-        rag_pipeline = get_rag_pipeline()
+        # ✅ SEC: KOL-147 - Validate course_id format
+        validate_course_id(request.course_id)
         
+        rag_pipeline = get_rag_pipeline()
+
         # Use course-specific collection
         collection_name = f"course_{request.course_id}"
-        
+
         result = await rag_pipeline.query(
-            query=request.query,
-            collection_name=collection_name,
-            n_results=5
+            query=request.query, collection_name=collection_name, n_results=5
         )
-        
+
         if result.success:
             # Format answer with sources if available
             answer = result.answer
@@ -110,21 +162,21 @@ async def ask_question(request: AskRequest):
                     else:
                         sources_text += f"{i}. {source_name}\n"
                 answer += sources_text
-            
+
             return AskResponse(answer=answer, success=True)
         else:
             return AskResponse(
                 answer="Maaf, saya tidak bisa menemukan jawaban untuk pertanyaan tersebut dalam materi kuliah.",
                 success=False,
-                error=result.error
+                error=result.error,
             )
-            
+
     except Exception as e:
         logger.error("ask_question_failed", query=request.query[:100], error=str(e))
         return AskResponse(
             answer="Maaf, terjadi kesalahan saat memproses pertanyaan. Silakan coba lagi.",
             success=False,
-            error=str(e)
+            error=str(e),
         )
 
 
@@ -132,137 +184,181 @@ async def ask_question(request: AskRequest):
     "/ingest",
     response_model=IngestResponse,
     tags=["Core-API Integration"],
-    summary="Ingest document into vector store (supports PDF, DOCX, PPTX, TXT, ZIP)"
+    summary="Ingest document into vector store (supports PDF, DOCX, PPTX, TXT, ZIP)",
 )
 async def ingest_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     course_id: str = Form(...),
     file_id: str = Form(...),
 ):
     """
-    Ingest a document into the vector store.
-    
-    Supports multiple formats:
-    - PDF (with image extraction and OCR)
-    - DOCX (Microsoft Word)
-    - PPTX (Microsoft PowerPoint)
-    - TXT, MD (Plain text, Markdown)
-    - ZIP (Archive containing multiple documents)
-    
-    Called by Core-API Knowledge Base service when a lecturer uploads a file.
-    
-    Args:
-        file: Document file to process
-        course_id: Course ID to associate the document with
-        file_id: File ID from the database (for tracking)
-    
-    Returns:
-        Processing result with chunks and stats
+    Ingest a document into the vector store (background processing).
     """
-    start_time = datetime.now()
+    # ✅ SEC: KOL-147 - Validate course_id format
+    validate_course_id(course_id)
     
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename is required")
-    
+
     # Get file extension
     ext = Path(file.filename).suffix.lower()
-    supported_extensions = ['.pdf', '.docx', '.doc', '.pptx', '.ppt', '.txt', '.md', '.zip']
-    
+    supported_extensions = [
+        ".pdf",
+        ".docx",
+        ".doc",
+        ".pptx",
+        ".ppt",
+        ".txt",
+        ".md",
+        ".zip",
+    ]
+
     if ext not in supported_extensions:
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type: {ext}. Supported: {', '.join(supported_extensions)}"
+            detail=f"Unsupported file type: {ext}. Supported: {', '.join(supported_extensions)}",
         )
-    
-    # Read file content
-    contents = await file.read()
-    
-    # Validate file size (50MB for ZIP, 10MB for others)
-    if ext == '.zip':
-        max_size = settings.MAX_ZIP_SIZE_MB * 1024 * 1024
-    else:
-        max_size = settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024
-    
-    if len(contents) > max_size:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File size exceeds limit"
-        )
-    
+
+    # Save uploaded file to a temporary location instead of reading into RAM
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=ext)
     try:
-        # Use document processor for comprehensive processing
+        # Stream file content to disk in chunks to avoid loading entire file into RAM
+        file_size = 0
+        max_size = (
+            (settings.MAX_ZIP_SIZE_MB if ext == ".zip" else settings.MAX_UPLOAD_SIZE_MB)
+            * 1024
+            * 1024
+        )
+
+        with os.fdopen(tmp_fd, "wb") as tmp_file:
+            while True:
+                chunk = await file.read(1024 * 1024)  # Read 1MB at a time
+                if not chunk:
+                    break
+                file_size += len(chunk)
+                if file_size > max_size:
+                    tmp_file.close()
+                    os.unlink(tmp_path)
+                    raise HTTPException(
+                        status_code=400, detail="File size exceeds limit"
+                    )
+                tmp_file.write(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Clean up temp file on error during write
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise HTTPException(
+            status_code=500, detail=f"Failed to save uploaded file: {str(e)}"
+        )
+
+    # Schedule background processing
+    original_filename = file.filename
+    background_tasks.add_task(
+        _process_ingest_background,
+        tmp_path=tmp_path,
+        original_filename=original_filename,
+        course_id=course_id,
+        file_id=file_id,
+    )
+
+    logger.info(
+        "document_ingest_scheduled",
+        file_id=file_id,
+        course_id=course_id,
+        filename=original_filename,
+        file_size=file_size,
+    )
+
+    return IngestResponse(
+        success=True,
+        message="Dokumen sedang diproses di latar belakang",
+        file_id=file_id,
+        document_id=file_id,
+        chunks_created=0,
+        page_count=0,
+        image_count=0,
+        file_type=ext.lstrip("."),
+        processing_time_ms=0,
+    )
+
+
+async def _process_ingest_background(
+    tmp_path: str,
+    original_filename: str,
+    course_id: str,
+    file_id: str,
+) -> None:
+    """Background task to process a document from a temp file path."""
+    start_time = datetime.now()
+    try:
         doc_processor = get_document_processor()
         document_id = file_id
         collection_name = f"course_{course_id}"
-        
+
         result = await doc_processor.process_file(
-            file_content=contents,
-            filename=file.filename,
+            file_path=tmp_path,
+            filename=original_filename,
             document_id=document_id,
             collection_name=collection_name,
             course_id=course_id,
             metadata={
                 "course_id": course_id,
                 "file_id": file_id,
-                "original_filename": file.filename,
-                "upload_time": datetime.now().isoformat()
-            }
+                "original_filename": original_filename,
+                "upload_time": datetime.now().isoformat(),
+            },
         )
-        
+
         processing_time = (datetime.now() - start_time).total_seconds() * 1000
-        
+
         if result.success:
             logger.info(
                 "document_ingested",
                 file_id=file_id,
                 course_id=course_id,
-                filename=file.filename,
+                filename=original_filename,
                 file_type=result.file_type,
                 chunks=len(result.chunks),
                 pages=result.page_count,
                 images=result.image_count,
-                processing_time_ms=processing_time
-            )
-            
-            return IngestResponse(
-                success=True,
-                message="Document ingested successfully",
-                file_id=file_id,
-                document_id=document_id,
-                chunks_created=len(result.chunks),
-                page_count=result.page_count,
-                image_count=result.image_count,
-                file_type=result.file_type,
-                processing_time_ms=processing_time
+                processing_time_ms=processing_time,
             )
         else:
-            raise HTTPException(
-                status_code=500,
-                detail=result.error or "Failed to process document"
+            logger.error(
+                "document_ingest_failed_background",
+                file_id=file_id,
+                filename=original_filename,
+                error=result.error,
             )
-        
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(
             "document_ingest_failed",
             file_id=file_id,
-            filename=file.filename,
-            error=str(e)
+            filename=original_filename,
+            error=str(e),
         )
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to process document: {str(e)}"
-        )
+    finally:
+        # Always clean up temp file
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        gc.collect()
 
 
 @router.post(
     "/ingest/batch",
     response_model=BatchUploadResponse,
     tags=["Core-API Integration"],
-    summary="Batch ingest multiple documents or ZIP archive"
+    summary="Batch ingest multiple documents or ZIP archive",
 )
 async def ingest_batch(
+    background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
     course_id: str = Form(...),
     extract_images: bool = Form(True),
@@ -270,932 +366,916 @@ async def ingest_batch(
 ):
     """
     Batch ingest multiple documents at once.
-    
+
     Accepts multiple files or a single ZIP archive containing documents.
-    
+    Files are saved to temporary paths and processed in the background.
+
     Args:
+        background_tasks: FastAPI BackgroundTasks for async processing
         files: List of document files to process
         course_id: Course ID to associate documents with
-    
+
     Returns:
-        Batch processing result with individual document stats
+        Acknowledgement with file count — processing runs in background
     """
-    start_time = datetime.now()
-    doc_processor = get_document_processor()
-    collection_name = f"course_{course_id}"
-    
-    all_results: List[DocumentProcessResult] = []
-    total_chunks = 0
-    
+    saved_files: list[dict] = []
+
     for i, file in enumerate(files):
         if not file.filename:
             continue
-            
+
+        ext = Path(file.filename).suffix.lower()
+        suffix = ext if ext else ".bin"
+
         try:
+            tmp = tempfile.NamedTemporaryFile(
+                delete=False, suffix=suffix, prefix="batch_"
+            )
             contents = await file.read()
+            tmp.write(contents)
+            tmp.close()
+            del contents
+            gc.collect()
+
             document_id = f"{course_id}_{datetime.now().strftime('%Y%m%d%H%M%S')}_{i}"
-            
-            result = await doc_processor.process_file(
-                file_content=contents,
-                filename=file.filename,
-                document_id=document_id,
-                collection_name=collection_name,
-                course_id=course_id,
-                metadata={
-                    "course_id": course_id,
-                    "batch_index": i,
-                    "original_filename": file.filename,
-                    "upload_time": datetime.now().isoformat(),
-                    "extract_images": extract_images,
-                    "perform_ocr": perform_ocr,
+
+            saved_files.append(
+                {
+                    "tmp_path": tmp.name,
+                    "filename": file.filename,
+                    "document_id": document_id,
+                    "index": i,
                 }
             )
-            
-            chunks_count = len(result.chunks) if result.chunks else 0
-            total_chunks += chunks_count
-            
-            all_results.append(DocumentProcessResult(
-                filename=result.filename,
-                file_type=result.file_type,
-                chunks_created=chunks_count,
-                page_count=result.page_count,
-                image_count=result.image_count,
-                total_characters=result.total_characters,
-                processing_time_ms=result.processing_time_ms,
-                success=result.success,
-                error=result.error
-            ))
-            
         except Exception as e:
-            logger.error("batch_file_failed", filename=file.filename, error=str(e))
-            all_results.append(DocumentProcessResult(
-                filename=file.filename or "unknown",
-                file_type="unknown",
-                chunks_created=0,
-                page_count=0,
-                image_count=0,
-                total_characters=0,
-                processing_time_ms=0,
-                success=False,
-                error=str(e)
-            ))
-    
-    processing_time = (datetime.now() - start_time).total_seconds() * 1000
-    successful = sum(1 for r in all_results if r.success)
-    failed = len(all_results) - successful
-    
-    logger.info(
-        "batch_ingest_complete",
-        course_id=course_id,
-        total=len(all_results),
-        successful=successful,
-        failed=failed,
-        total_chunks=total_chunks,
-        processing_time_ms=processing_time
-    )
-    
+            logger.error("batch_file_save_failed", filename=file.filename, error=str(e))
+
+    if not saved_files:
+        raise HTTPException(status_code=400, detail="No valid files provided")
+
+    # Schedule background processing for each file
+    for entry in saved_files:
+        background_tasks.add_task(
+            _process_batch_file_background,
+            tmp_path=entry["tmp_path"],
+            original_filename=entry["filename"],
+            course_id=course_id,
+            document_id=entry["document_id"],
+            batch_index=entry["index"],
+            extract_images=extract_images,
+            perform_ocr=perform_ocr,
+        )
+
     return BatchUploadResponse(
-        success=successful > 0,
-        message=f"Processed {successful}/{len(all_results)} files successfully",
-        total_files=len(all_results),
-        successful_files=successful,
-        failed_files=failed,
-        total_chunks=total_chunks,
-        documents=all_results,
-        processing_time_ms=processing_time
+        success=True,
+        message=f"{len(saved_files)} dokumen sedang diproses di latar belakang",
+        total_files=len(saved_files),
+        successful_files=0,
+        failed_files=0,
+        total_chunks=0,
+        documents=[],
+        processing_time_ms=0,
     )
+
+
+async def _process_batch_file_background(
+    tmp_path: str,
+    original_filename: str,
+    course_id: str,
+    document_id: str,
+    batch_index: int,
+    extract_images: bool,
+    perform_ocr: bool,
+) -> None:
+    """Background task to process a single file from a batch upload."""
+    try:
+        doc_processor = get_document_processor()
+        collection_name = f"course_{course_id}"
+
+        result = await doc_processor.process_file(
+            file_path=tmp_path,
+            filename=original_filename,
+            document_id=document_id,
+            collection_name=collection_name,
+            course_id=course_id,
+            metadata={
+                "course_id": course_id,
+                "batch_index": batch_index,
+                "original_filename": original_filename,
+                "upload_time": datetime.now().isoformat(),
+                "extract_images": extract_images,
+                "perform_ocr": perform_ocr,
+            },
+        )
+
+        if result.success:
+            logger.info(
+                "batch_file_ingested",
+                document_id=document_id,
+                course_id=course_id,
+                filename=original_filename,
+                chunks=len(result.chunks) if result.chunks else 0,
+            )
+        else:
+            logger.error(
+                "batch_file_ingest_failed_background",
+                document_id=document_id,
+                filename=original_filename,
+                error=result.error,
+            )
+    except Exception as e:
+        logger.error(
+            "batch_file_ingest_failed",
+            document_id=document_id,
+            filename=original_filename,
+            error=str(e),
+        )
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        gc.collect()
 
 
 # ============== Health Check ==============
+
 
 @router.get(
     "/health",
     response_model=HealthResponse,
     tags=["Health"],
-    summary="Health check endpoint"
+    summary="Health check endpoint",
 )
 async def health_check():
     """
     Check the health status of the AI Engine.
-    
+
     Returns status of all dependent services.
     """
     services = {
         "vector_store": False,
         "llm": False,
     }
-    
+
     # Check vector store
     try:
-        vector_store = get_vector_store()
+        vector_store = await get_vector_store()
         # Simple check - try to list collections
         await vector_store._ensure_collection("health_check")
         services["vector_store"] = True
     except Exception as e:
         logger.warning("health_check_vector_store_failed", error=str(e))
-    
+
     # Check LLM (just verify it's initialized)
     try:
         from app.services.llm import get_llm_service
+
         llm = get_llm_service()
         services["llm"] = llm.model is not None
     except Exception as e:
         logger.warning("health_check_llm_failed", error=str(e))
-    
+
     overall_status = "healthy" if all(services.values()) else "degraded"
-    
+
     return HealthResponse(
         status=overall_status,
         version=settings.VERSION,
         timestamp=datetime.now(),
-        services=services
+        services=services,
     )
-
-
-# ============== PDF Upload & Document Management ==============
-
-@router.post(
-    "/documents/upload",
-    response_model=PDFUploadResponse,
-    tags=["Documents"],
-    summary="Upload and process a PDF document"
-)
-async def upload_pdf(
-    file: UploadFile = File(...),
-    course_id: Optional[str] = Form(None),
-    collection_name: Optional[str] = Form(None),
-):
-    """
-    Upload a PDF document for processing.
-    
-    The document will be:
-    1. Validated (must be PDF, under size limit)
-    2. Text extracted
-    3. Chunked into smaller pieces
-    4. Embedded and stored in vector database
-    
-    Args:
-        file: PDF file to upload
-        course_id: Optional course ID to associate
-        collection_name: Optional collection name (defaults to course_id or 'default')
-    
-    Returns:
-        Upload result with document ID and processing stats
-    """
-    start_time = datetime.now()
-    
-    # Validate file type
-    if not file.filename or not file.filename.lower().endswith('.pdf'):
-        raise HTTPException(
-            status_code=400,
-            detail="Only PDF files are allowed"
-        )
-    
-    # Validate file size
-    contents = await file.read()
-    if len(contents) > settings.MAX_UPLOAD_SIZE_MB * 1024 * 1024:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File size exceeds {settings.MAX_UPLOAD_SIZE_MB}MB limit"
-        )
-    
-    try:
-        # Generate document ID
-        document_id = str(uuid.uuid4())
-        
-        # Determine collection
-        target_collection = collection_name or (f"course_{course_id}" if course_id else "default")
-        
-        # Process PDF
-        pdf_processor = get_pdf_processor()
-        result = await pdf_processor.process_pdf(
-            pdf_content=contents,
-            filename=file.filename,
-            document_id=document_id,
-            collection_name=target_collection,
-            metadata={
-                "course_id": course_id,
-                "original_filename": file.filename,
-                "upload_time": datetime.now().isoformat()
-            }
-        )
-        
-        processing_time = (datetime.now() - start_time).total_seconds() * 1000
-        
-        logger.info(
-            "pdf_upload_complete",
-            document_id=document_id,
-            filename=file.filename,
-            chunks=result.get("chunks_count", 0),
-            processing_time_ms=processing_time
-        )
-        
-        return PDFUploadResponse(
-            success=True,
-            message="Document uploaded and processed successfully",
-            document_id=document_id,
-            filename=file.filename,
-            chunks_created=result.get("chunks_count", 0),
-            processing_time_ms=processing_time
-        )
-        
-    except Exception as e:
-        logger.error(
-            "pdf_upload_failed",
-            filename=file.filename,
-            error=str(e)
-        )
-        
-        return PDFUploadResponse(
-            success=False,
-            message="Failed to process document",
-            error=str(e),
-            processing_time_ms=(datetime.now() - start_time).total_seconds() * 1000
-        )
-
-
-@router.delete(
-    "/documents/{document_id}",
-    response_model=CollectionResponse,
-    tags=["Documents"],
-    summary="Delete a document"
-)
-async def delete_document(
-    document_id: str,
-    collection_name: Optional[str] = Query(None)
-):
-    """
-    Delete a document and its chunks from the vector store.
-    
-    Args:
-        document_id: ID of the document to delete
-        collection_name: Optional collection name
-    
-    Returns:
-        Deletion result
-    """
-    try:
-        vector_store = get_vector_store()
-        await vector_store.delete_documents(
-            ids=[document_id],
-            collection_name=collection_name,
-            where={"document_id": document_id}
-        )
-        
-        logger.info("document_deleted", document_id=document_id)
-        
-        return CollectionResponse(
-            success=True,
-            name=collection_name or "default",
-            message=f"Document {document_id} deleted successfully"
-        )
-        
-    except Exception as e:
-        logger.error("document_delete_failed", document_id=document_id, error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ============== RAG Query ==============
-
-@router.post(
-    "/query",
-    response_model=QueryResponse,
-    tags=["RAG"],
-    summary="Query documents using RAG"
-)
-async def query_documents(request: QueryRequest):
-    """
-    Query the knowledge base using RAG.
-    
-    The query will:
-    1. Search vector store for relevant document chunks
-    2. Use retrieved context to generate an answer
-    3. Return answer with source citations
-    
-    Args:
-        request: Query request with question and options
-    
-    Returns:
-        Answer with sources and metadata
-    """
-    try:
-        rag_pipeline = get_rag_pipeline()
-        
-        # Determine collection
-        collection_name = f"course_{request.course_id}" if request.course_id else None
-        
-        result = await rag_pipeline.query(
-            query=request.query,
-            collection_name=collection_name,
-            n_results=request.n_results
-        )
-        
-        # Format sources
-        sources = []
-        if request.include_sources:
-            sources = [
-                SourceInfo(
-                    source=s.get("source", "Unknown"),
-                    page=s.get("page"),
-                    chunk_index=s.get("chunk_index"),
-                    relevance_score=s.get("relevance_score", 0)
-                )
-                for s in result.sources
-            ]
-        
-        return QueryResponse(
-            success=result.success,
-            answer=result.answer,
-            sources=sources,
-            query=result.query,
-            tokens_used=result.tokens_used,
-            processing_time_ms=result.processing_time_ms,
-            error=result.error
-        )
-        
-    except Exception as e:
-        logger.error("query_failed", query=request.query[:100], error=str(e))
-        return QueryResponse(
-            success=False,
-            answer="",
-            sources=[],
-            query=request.query,
-            error=str(e)
-        )
-
-
-# ============== Chat Intervention ==============
-
-@router.post(
-    "/intervention/analyze",
-    response_model=InterventionResponse,
-    tags=["Intervention"],
-    summary="Analyze chat and generate intervention"
-)
-async def analyze_chat(request: InterventionRequest):
-    """
-    Analyze a chat conversation and generate an intervention if needed.
-    
-    The analysis checks for:
-    - Off-topic discussions
-    - Inactivity
-    - Low engagement
-    - Need for summary
-    
-    Args:
-        request: Chat messages and context
-    
-    Returns:
-        Intervention decision and message
-    """
-    try:
-        intervention_service = get_intervention_service()
-        
-        # Convert messages to dict format
-        messages = [
-            {
-                "sender": m.sender,
-                "content": m.content,
-                "timestamp": m.timestamp.isoformat() if m.timestamp else None,
-                "sender_id": m.sender_id
-            }
-            for m in request.messages
-        ]
-        
-        # If specific type requested, generate that type
-        if request.intervention_type and request.force:
-            result = await intervention_service.llm_service.generate_intervention(
-                chat_messages=messages,
-                intervention_type=request.intervention_type,
-                topic=request.topic
-            )
-            
-            return InterventionResponse(
-                success=result.success,
-                should_intervene=True,
-                message=result.content,
-                intervention_type=request.intervention_type,
-                confidence=1.0,
-                reason="Forced intervention",
-                error=result.error
-            )
-        
-        # Otherwise, analyze and decide
-        result = await intervention_service.analyze_and_intervene(
-            messages=messages,
-            topic=request.topic,
-            chat_room_id=request.chat_room_id
-        )
-        
-        return InterventionResponse(
-            success=result.success,
-            should_intervene=result.should_intervene,
-            message=result.message,
-            intervention_type=result.intervention_type.value,
-            confidence=result.confidence,
-            reason=result.reason,
-            error=result.error
-        )
-        
-    except Exception as e:
-        logger.error("intervention_analysis_failed", error=str(e))
-        return InterventionResponse(
-            success=False,
-            should_intervene=False,
-            message="",
-            intervention_type="error",
-            confidence=0,
-            reason=str(e),
-            error=str(e)
-        )
-
-
-@router.post(
-    "/intervention/summary",
-    response_model=SummaryResponse,
-    tags=["Intervention"],
-    summary="Generate discussion summary"
-)
-async def generate_summary(request: SummaryRequest):
-    """
-    Generate a summary of the chat discussion.
-    
-    Args:
-        request: Chat messages to summarize
-    
-    Returns:
-        Summary with key points
-    """
-    try:
-        intervention_service = get_intervention_service()
-        
-        messages = [
-            {
-                "sender": m.sender,
-                "content": m.content,
-                "timestamp": m.timestamp.isoformat() if m.timestamp else None
-            }
-            for m in request.messages
-        ]
-        
-        result = await intervention_service.generate_summary(
-            messages=messages,
-            chat_room_id=request.chat_room_id
-        )
-        
-        return SummaryResponse(
-            success=result.success,
-            summary=result.message,
-            message_count=len(request.messages),
-            error=result.error
-        )
-        
-    except Exception as e:
-        logger.error("summary_generation_failed", error=str(e))
-        return SummaryResponse(
-            success=False,
-            summary="",
-            message_count=len(request.messages),
-            error=str(e)
-        )
-
-
-@router.post(
-    "/intervention/prompt",
-    response_model=PromptResponse,
-    tags=["Intervention"],
-    summary="Generate discussion prompt"
-)
-async def generate_prompt(request: PromptRequest):
-    """
-    Generate a discussion prompt for the given topic.
-    
-    Args:
-        request: Topic and difficulty level
-    
-    Returns:
-        Generated discussion prompt
-    """
-    try:
-        intervention_service = get_intervention_service()
-        
-        result = await intervention_service.generate_discussion_prompt(
-            topic=request.topic,
-            context=request.context,
-            difficulty=request.difficulty
-        )
-        
-        return PromptResponse(
-            success=result.success,
-            prompt=result.message,
-            topic=request.topic,
-            error=result.error
-        )
-        
-    except Exception as e:
-        logger.error("prompt_generation_failed", error=str(e))
-        return PromptResponse(
-            success=False,
-            prompt="",
-            topic=request.topic,
-            error=str(e)
-        )
-
-
-# ============== Collection Management ==============
-
-@router.post(
-    "/collections",
-    response_model=CollectionResponse,
-    tags=["Collections"],
-    summary="Create a new collection"
-)
-async def create_collection(request: CreateCollectionRequest):
-    """
-    Create a new vector store collection.
-    
-    Args:
-        request: Collection details
-    
-    Returns:
-        Created collection info
-    """
-    try:
-        vector_store = get_vector_store()
-        await vector_store._ensure_collection(request.name)
-        
-        logger.info("collection_created", name=request.name)
-        
-        return CollectionResponse(
-            success=True,
-            name=request.name,
-            message="Collection created successfully"
-        )
-        
-    except Exception as e:
-        logger.error("collection_create_failed", name=request.name, error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get(
-    "/collections",
-    response_model=CollectionListResponse,
-    tags=["Collections"],
-    summary="List all collections"
-)
-async def list_collections():
-    """
-    List all vector store collections.
-    
-    Returns:
-        List of collections with counts
-    """
-    try:
-        vector_store = get_vector_store()
-        collections_data = await vector_store.list_collections()
-        
-        return CollectionListResponse(
-            success=True,
-            collections=collections_data,
-            total=len(collections_data)
-        )
-        
-    except Exception as e:
-        logger.error("collections_list_failed", error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.delete(
-    "/collections/{collection_name}",
-    response_model=CollectionResponse,
-    tags=["Collections"],
-    summary="Delete a collection"
-)
-async def delete_collection(collection_name: str):
-    """
-    Delete a vector store collection.
-    
-    Args:
-        collection_name: Name of collection to delete
-    
-    Returns:
-        Deletion result
-    """
-    try:
-        vector_store = get_vector_store()
-        await vector_store.delete_collection(collection_name)
-        
-        logger.info("collection_deleted", name=collection_name)
-        
-        return CollectionResponse(
-            success=True,
-            name=collection_name,
-            message="Collection deleted successfully"
-        )
-        
-    except Exception as e:
-        logger.error("collection_delete_failed", name=collection_name, error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ============== Orchestration (Teacher-AI Complementarity) ==============
-
-@router.post(
-    "/chat",
-    response_model=OrchestrationResponse,
-    tags=["Orchestration"],
-    summary="Handle chat message with full orchestration pipeline"
-)
-async def chat_endpoint(request: OrchestrationRequest):
-    """
-    Main endpoint for orchestrated chat handling.
-    
-    Implements Teacher-AI Complementarity framework:
-    1. Analyzes engagement (Cognitive, Behavioral, Emotional)
-    2. Generates RAG response with policy optimization (FETCH/NO_FETCH)
-    3. Logs events for Educational Process Mining
-    4. Triggers interventions when discussion quality is low
-    5. Notifies teacher if quality drops below threshold
-    
-    Args:
-        request: OrchestrationRequest with user_id, group_id, message
-    
-    Returns:
-        OrchestrationResponse with bot_response, intervention, analytics
-    """
-    try:
-        orchestrator = get_orchestrator()
-        
-        result = await orchestrator.handle_message(
-            user_id=request.user_id,
-            group_id=request.group_id,
-            message=request.message,
-            topic=request.topic,
-            collection_name=request.collection_name,
-            course_id=request.course_id,
-            chat_room_id=request.chat_room_id
-        )
-        
-        return OrchestrationResponse(
-            success=result.success,
-            bot_response=result.reply,
-            system_intervention=result.intervention,
-            intervention_type=result.intervention_type,
-            action_taken=result.action_taken,
-            should_notify_teacher=result.should_notify_teacher,
-            quality_score=result.quality_score,
-            meta=result.analytics,
-            error=result.error
-        )
-        
-    except Exception as e:
-        logger.error("orchestration_failed", error=str(e))
-        return OrchestrationResponse(
-            success=False,
-            bot_response="Maaf, terjadi kesalahan sistem.",
-            action_taken="ERROR",
-            error=str(e)
-        )
-
-
-@router.get(
-    "/analytics/group/{group_id}",
-    response_model=GroupAnalyticsResponse,
-    tags=["Analytics"],
-    summary="Get group analytics and discussion quality"
-)
-async def get_group_analytics(group_id: str):
-    """
-    Get aggregated analytics for a group's discussion.
-    
-    Returns:
-    - Quality score with breakdown
-    - Engagement type distribution
-    - HOT (Higher-Order Thinking) percentage
-    - Recommendations for improvement
-    
-    Args:
-        group_id: The group ID to get analytics for
-    
-    Returns:
-        GroupAnalyticsResponse with metrics
-    """
-    try:
-        orchestrator = get_orchestrator()
-        analytics = await orchestrator.get_group_analytics(group_id)
-        
-        return GroupAnalyticsResponse(
-            success=True,
-            group_id=group_id,
-            message_count=analytics.get("message_count", 0),
-            quality_score=analytics.get("quality_score"),
-            quality_breakdown=analytics.get("quality_breakdown", {}),
-            recommendation=analytics.get("recommendation"),
-            participants=analytics.get("participants", []),
-            participant_count=analytics.get("participant_count", 0),
-            engagement_distribution=analytics.get("engagement_distribution", {})
-        )
-        
-    except Exception as e:
-        logger.error("group_analytics_failed", group_id=group_id, error=str(e))
-        return GroupAnalyticsResponse(
-            success=False,
-            group_id=group_id,
-            error=str(e)
-        )
 
 
 @router.post(
     "/analytics/engagement",
     response_model=EngagementAnalysisResponse,
     tags=["Analytics"],
-    summary="Analyze text for engagement metrics"
+    summary="Analyze text engagement metrics (Core-API Proxy)",
 )
 async def analyze_engagement(request: EngagementAnalysisRequest):
     """
-    Analyze a text for engagement metrics (SSRL).
-    
-    Computes:
-    - Lexical Variety (vocabulary richness)
-    - Higher-Order Thinking detection
-    - Engagement type classification
-    
-    Args:
-        request: EngagementAnalysisRequest with text
-    
-    Returns:
-        EngagementAnalysisResponse with metrics
+    Analyze text for engagement metrics (Lexical, HOT, etc).
+    Called by Core-API for real-time analysis.
     """
     try:
         analyzer = get_engagement_analyzer()
-        result = analyzer.analyze_interaction(request.text)
-        
+        analysis = analyzer.analyze_interaction(request.text)
+
         return EngagementAnalysisResponse(
             success=True,
-            lexical_variety=result.lexical_variety,
-            engagement_type=result.engagement_type.value,
-            is_higher_order=result.is_higher_order,
-            hot_indicators=result.hot_indicators,
-            word_count=result.word_count,
-            unique_words=result.unique_words,
-            confidence=result.confidence
+            lexical_variety=analysis.lexical_variety,
+            engagement_type=analysis.engagement_type.value,
+            is_higher_order=analysis.is_higher_order,
+            hot_indicators=analysis.hot_indicators,
+            word_count=len(request.text.split()),
+            unique_words=len(set(request.text.lower().split())),
+            confidence=1.0,  # Simplified
         )
-        
     except Exception as e:
         logger.error("engagement_analysis_failed", error=str(e))
         return EngagementAnalysisResponse(
             success=False,
+            error=str(e),
             lexical_variety=0,
             engagement_type="unknown",
             is_higher_order=False,
+            hot_indicators=[],
             word_count=0,
             unique_words=0,
             confidence=0,
-            error=str(e)
         )
 
 
 @router.get(
-    "/analytics/export",
-    response_model=ProcessMiningExportResponse,
+    "/analytics/dashboard/group/{group_id}",
     tags=["Analytics"],
-    summary="Export event logs for Process Mining (ProM/Disco)"
+    summary="Get dashboard data for a GROUP (Collaboration & Dynamics)",
 )
-async def export_process_mining_data():
+async def get_group_dashboard(group_id: str):
     """
-    Export event logs in a format ready for Educational Process Mining.
-    
-    The exported CSV follows EPM standards with:
-    - CaseID (Group ID)
-    - Activity (Interaction type)
-    - Timestamp
-    - Resource (User/Agent ID)
-    
-    Compatible with ProM, Disco, PM4Py.
-    
-    Returns:
-        Export result with file URL
+    Get metrics focused on Group Collaboration.
+    - Gini Participation
+    - Group Plan vs Reality
+    - Collective Anomalies
     """
     try:
-        pm_logger = get_process_mining_logger()
-        
-        # Export to ProM format
-        export_path = pm_logger.export_for_prom()
-        stats = pm_logger.get_statistics()
-        
-        return ProcessMiningExportResponse(
-            success=True,
-            file_url=f"/data/event_logs/export_prom.csv",
-            total_events=stats.get("total_events", 0),
-            unique_cases=stats.get("unique_cases", 0),
-            message="Export ready for ProM/Disco import"
-        )
-        
+        orchestrator = get_orchestrator()
+        data = await orchestrator.get_group_dashboard_data(group_id)
+        return JSONResponse(content=data)
     except Exception as e:
-        logger.error("process_mining_export_failed", error=str(e))
-        return ProcessMiningExportResponse(
-            success=False,
-            file_url="",
-            error=str(e)
-        )
+        logger.error("group_dashboard_api_failed", group_id=group_id, error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-# ============== Guardrails ==============
-
-@router.post(
-    "/guardrails/check",
-    response_model=GuardrailCheckResponse,
-    tags=["Guardrails"],
-    summary="Check text against safety guardrails"
+@router.get(
+    "/analytics/dashboard/individual/{user_id}",
+    tags=["Analytics"],
+    summary="Get dashboard data for an INDIVIDUAL student",
 )
-async def check_guardrails(request: GuardrailCheckRequest):
+async def get_individual_dashboard(user_id: str):
     """
-    Check text input against safety guardrails.
-    
-    Validates for:
-    - Academic dishonesty (homework completion requests)
-    - Off-topic content
-    - Harmful/dangerous content
-    - PII (Personally Identifiable Information)
-    - Toxicity and profanity
-    
-    Args:
-        request: GuardrailCheckRequest with text to check
-    
-    Returns:
-        GuardrailCheckResponse with action and details
+    Get metrics focused on Personal Progress.
+    - Individual message quality
+    - Personal HOT trends
+    - Technical topics mastered
     """
     try:
-        guardrails = get_guardrails()
-        result = guardrails.check_input(request.text, request.context)
-        
-        return GuardrailCheckResponse(
-            allowed=result.action == GuardrailAction.ALLOW,
-            action=result.action.value,
-            reason=result.reason,
-            message=result.message,
-            sanitized_text=result.sanitized_input,
-            triggered_rules=result.triggered_rules or [],
-            confidence=result.confidence
-        )
-        
+        orchestrator = get_orchestrator()
+        data = await orchestrator.get_individual_dashboard_data(user_id)
+        return JSONResponse(content=data)
     except Exception as e:
-        logger.error("guardrails_check_failed", error=str(e))
-        return GuardrailCheckResponse(
-            allowed=True,  # Fail open for safety
-            action="allow",
-            reason="check_failed",
-            message=str(e),
-            triggered_rules=[],
-            confidence=0
+        logger.error("individual_dashboard_api_failed", user_id=user_id, error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get(
+    "/analytics/dashboard/{group_id}",
+    tags=["Analytics"],
+    summary="Get unified dashboard data (Legacy - redirects to group)",
+)
+async def get_dashboard_data_legacy(group_id: str):
+    return await get_group_dashboard(group_id)
+
+
+# ============== Activity Data CSV Export ==============
+# New endpoint for exporting activity data for manual assessment
+
+
+@router.get(
+    "/export/activity/group/{group_id}",
+    tags=["Analytics"],
+    summary="Export group activity data to CSV (Student Breakdown)",
+)
+async def export_group_activity_csv(group_id: str):
+    """
+    Export group activity data with per-student detailed breakdown.
+    Focuses on what each student did across all chat spaces (sessions) in their group.
+    """
+    try:
+        export_service = get_export_service()
+        csv_data = await export_service.export_group_activity_detailed(group_id)
+
+        filename = f"student_breakdown_{group_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+
+        return Response(
+            content=csv_data,
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+
+    except Exception as e:
+        logger.error("csv_export_failed", group_id=group_id, error=str(e))
+        raise HTTPException(
+            status_code=500, detail=f"Failed to export activity data: {str(e)}"
         )
 
 
-@router.post(
-    "/guardrails/check-output",
-    response_model=GuardrailCheckResponse,
-    tags=["Guardrails"],
-    summary="Check AI output against safety guardrails"
+@router.get(
+    "/export/activity/chat-space/{chat_space_id}",
+    tags=["Analytics"],
+    summary="Export chat space activity data to CSV",
 )
-async def check_output_guardrails(
-    response_text: str = Form(...),
-    original_query: str = Form(...)
+async def export_chat_space_activity_csv(
+    chat_space_id: str,
+    include_detailed: bool = Query(True, description="Include detailed metrics"),
 ):
     """
-    Check AI-generated output against safety guardrails.
-    
-    Validates for:
-    - Complete homework solutions (should provide hints instead)
-    - PII in generated content
-    - Harmful content in responses
-    
+    Export chat space activity data to CSV format.
+
+    Similar to group export but for specific chat space (session).
+
     Args:
-        response_text: Generated AI response to check
-        original_query: Original user query for context
-    
+        chat_space_id: The chat space ID to export data for
+        include_detailed: Whether to include detailed engagement metrics
+
     Returns:
-        GuardrailCheckResponse with action and sanitized output if needed
+        CSV file download
     """
     try:
-        guardrails = get_guardrails()
-        result = guardrails.check_output(response_text, original_query)
-        
-        return GuardrailCheckResponse(
-            allowed=result.action == GuardrailAction.ALLOW,
-            action=result.action.value,
-            reason=result.reason,
-            message=result.message,
-            sanitized_text=result.sanitized_input,
-            triggered_rules=result.triggered_rules or [],
-            confidence=result.confidence
+        export_service = get_export_service()
+
+        csv_data = await export_service.export_chat_space_activity(
+            chat_space_id=chat_space_id, include_detailed=include_detailed
         )
-        
+
+        filename = f"activity_session_{chat_space_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+
+        logger.info(
+            "activity_csv_exported",
+            chat_space_id=chat_space_id,
+            size_bytes=len(csv_data),
+            detailed=include_detailed,
+        )
+
+        return Response(
+            content=csv_data,
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+
     except Exception as e:
-        logger.error("output_guardrails_check_failed", error=str(e))
-        return GuardrailCheckResponse(
-            allowed=True,
-            action="allow",
-            reason="check_failed",
-            triggered_rules=[],
-            confidence=0
+        logger.error("csv_export_failed", chat_space_id=chat_space_id, error=str(e))
+        raise HTTPException(
+            status_code=500, detail=f"Failed to export activity data: {str(e)}"
+        )
+
+
+@router.get(
+    "/export/process-mining/case/{case_id}",
+    tags=["Analytics"],
+    summary="Export raw event logs to CSV for Process Mining (XES compatible)",
+)
+async def export_process_mining_csv(case_id: str):
+    """
+    Export raw event logs to CSV format compatible with Process Mining tools.
+
+    The schema follows Proposal TA requirements:
+    CaseID, Activity, Timestamp, Resource, Lifecycle, original_text, etc.
+
+    Args:
+        case_id: The CaseID to export (e.g., group_123_session_5)
+
+    Returns:
+        CSV file download
+    """
+    try:
+        from app.services.mongodb_logger import get_mongo_logger
+
+        mongo_logger = get_mongo_logger()
+
+        csv_data = await mongo_logger.export_to_csv(case_id=case_id)
+
+        filename = (
+            f"process_mining_{case_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        )
+
+        logger.info(
+            "process_mining_csv_exported", case_id=case_id, size_bytes=len(csv_data)
+        )
+
+        return Response(
+            content=csv_data,
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+
+    except Exception as e:
+        logger.error("process_mining_export_failed", case_id=case_id, error=str(e))
+        raise HTTPException(
+            status_code=500, detail=f"Failed to export process mining data: {str(e)}"
+        )
+
+
+# ============== SMART Goal Validation Endpoints ==============
+# New endpoints for SMART goal validation and refinement
+
+
+@router.post(
+    "/goals/validate",
+    tags=["Goals"],
+    summary="Validate a learning goal against SMART criteria",
+)
+async def validate_goal(
+    goal_text: str = Form(...), user_id: str = Form(...), chat_space_id: str = Form(...)
+):
+    """
+    Validate a learning goal against SMART criteria.
+
+    This endpoint analyzes a student's goal statement and checks if it meets
+    the SMART criteria: Specific, Measurable, Achievable, Relevant, Time-bound.
+
+    Args:
+        goal_text: The goal statement to validate
+        user_id: ID of the user setting the goal
+        chat_space_id: ID of the chat space
+
+    Returns:
+        Validation result with score, feedback, and suggestions
+    """
+    try:
+        orchestrator = get_orchestrator()
+
+        result = await orchestrator.validate_goal(
+            goal_text=goal_text, user_id=user_id, chat_space_id=chat_space_id
+        )
+
+        logger.info(
+            "goal_validation_api",
+            user_id=user_id,
+            chat_space_id=chat_space_id,
+            is_valid=result.get("is_valid"),
+            score=result.get("score"),
+        )
+
+        return JSONResponse(content=result)
+
+    except Exception as e:
+        logger.error("goal_validation_api_failed", error=str(e), user_id=user_id)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to validate goal: {str(e)}"
+        )
+
+
+@router.post(
+    "/goals/refine",
+    tags=["Goals"],
+    summary="Get Socratic questioning hints to improve SMART goal",
+)
+async def get_goal_refinement(
+    current_goal: str = Form(...),
+    missing_criteria: str = Form(...),  # JSON string of list
+):
+    """
+    Get Socratic questioning hints to help student improve their SMART goal.
+
+    This endpoint uses the LLM to generate helpful hints that guide students
+    to improve their goal without giving direct answers.
+
+    Args:
+        current_goal: The student's current goal statement
+        missing_criteria: JSON string of missing SMART criteria
+
+    Returns:
+        Refinement suggestion from LLM
+    """
+    try:
+        import json
+
+        missing_list = json.loads(missing_criteria)
+
+        orchestrator = get_orchestrator()
+
+        result = await orchestrator.get_goal_refinement(
+            current_goal=current_goal, missing_criteria=missing_list
+        )
+
+        logger.info(
+            "goal_refinement_api",
+            current_goal=current_goal[:50],
+            success=result.get("success"),
+        )
+
+        return JSONResponse(content=result)
+
+    except json.JSONDecodeError as e:
+        logger.error("goal_refinement_json_error", error=str(e))
+        raise HTTPException(
+            status_code=400, detail="Invalid JSON format for missing_criteria"
+        )
+    except Exception as e:
+        logger.error("goal_refinement_api_failed", error=str(e))
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get refinement: {str(e)}"
+        )
+
+
+# ============== Logic Listener Endpoints ==============
+# New endpoints for real-time group monitoring and intervention
+
+
+@router.get(
+    "/groups/{group_id}/status",
+    tags=["Groups"],
+    summary="Check group status using Logic Listener",
+)
+async def check_group_status(
+    group_id: str, topic: Optional[str] = Query(None, description="Discussion topic")
+):
+    """
+    Check group status using Logic Listener for real-time monitoring.
+
+    This endpoint analyzes group dynamics and detects:
+    - Off-topic discussions
+    - Silence periods
+    - Participation inequity
+
+    Args:
+        group_id: ID of the group to check
+        topic: Optional discussion topic
+
+    Returns:
+        Group status with intervention triggers
+    """
+    try:
+        orchestrator = get_orchestrator()
+
+        result = await orchestrator.check_group_status(group_id=group_id, topic=topic)
+
+        logger.info(
+            "group_status_check_api",
+            group_id=group_id,
+            should_intervene=result.get("should_intervene"),
+            interventions_count=len(result.get("interventions", [])),
+        )
+
+        return JSONResponse(content=result)
+
+    except Exception as e:
+        logger.error("group_status_check_api_failed", error=str(e), group_id=group_id)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to check group status: {str(e)}"
+        )
+
+
+@router.post(
+    "/groups/{group_id}/track-participation",
+    tags=["Groups"],
+    summary="Track user participation for Logic Listener",
+)
+async def track_participation(group_id: str, user_id: str = Form(...)):
+    """
+    Track user participation for Logic Listener.
+
+    This endpoint records when a user sends a message, which is used
+    to calculate participation equity and detect silent members.
+
+    Args:
+        group_id: ID of the group
+        user_id: ID of the user
+
+    Returns:
+        Tracking result
+    """
+    try:
+        orchestrator = get_orchestrator()
+
+        result = await orchestrator.track_participation(
+            group_id=group_id, user_id=user_id
+        )
+
+        logger.info("participation_tracking_api", group_id=group_id, user_id=user_id)
+
+        return JSONResponse(content=result)
+
+    except Exception as e:
+        logger.error(
+            "participation_tracking_api_failed",
+            error=str(e),
+            group_id=group_id,
+            user_id=user_id,
+        )
+        raise HTTPException(
+            status_code=500, detail=f"Failed to track participation: {str(e)}"
+        )
+
+
+@router.post(
+    "/groups/{group_id}/update-last-message",
+    tags=["Groups"],
+    summary="Update last message timestamp for Logic Listener",
+)
+async def update_last_message_time(group_id: str):
+    """
+    Update last message timestamp for Logic Listener.
+
+    This endpoint updates the timestamp of the last message in a group,
+    which is used to detect silence periods.
+
+    Args:
+        group_id: ID of the group
+
+    Returns:
+        Update result
+    """
+    try:
+        orchestrator = get_orchestrator()
+
+        result = await orchestrator.update_last_message_time(group_id=group_id)
+
+        logger.info("last_message_time_update_api", group_id=group_id)
+
+        return JSONResponse(content=result)
+
+    except Exception as e:
+        logger.error(
+            "last_message_time_update_api_failed", error=str(e), group_id=group_id
+        )
+        raise HTTPException(
+            status_code=500, detail=f"Failed to update last message time: {str(e)}"
+        )
+
+
+@router.post(
+    "/groups/{group_id}/set-topic",
+    tags=["Groups"],
+    summary="Set the topic for a group for Logic Listener",
+)
+async def set_group_topic(group_id: str, topic: str = Form(...)):
+    """
+    Set the topic for a group for Logic Listener.
+
+    This endpoint sets the discussion topic, which is used to detect
+    off-topic discussions.
+
+    Args:
+        group_id: ID of the group
+        topic: Discussion topic
+
+    Returns:
+        Set result
+    """
+    try:
+        orchestrator = get_orchestrator()
+
+        result = await orchestrator.set_group_topic(group_id=group_id, topic=topic)
+
+        logger.info("group_topic_set_api", group_id=group_id, topic=topic)
+
+        return JSONResponse(content=result)
+
+    except Exception as e:
+        logger.error(
+            "group_topic_set_api_failed", error=str(e), group_id=group_id, topic=topic
+        )
+        raise HTTPException(
+            status_code=500, detail=f"Failed to set group topic: {str(e)}"
+        )
+
+
+# ============== Efficiency Guard Endpoints ==============
+# New endpoints for caching, rate limiting, and performance optimization
+
+
+@router.get(
+    "/efficiency/cache/statistics",
+    tags=["Efficiency"],
+    summary="Get cache performance statistics",
+)
+async def get_cache_statistics():
+    """
+    Get cache performance statistics.
+
+    Returns information about cache hits, misses, hit rate, and cache size.
+    """
+    try:
+        if not settings.ENABLE_EFFICIENCY_GUARD:
+            return JSONResponse(
+                content={"enabled": False, "message": "Efficiency Guard is disabled"}
+            )
+
+        efficiency_guard = get_efficiency_guard()
+        stats = efficiency_guard.get_cache_statistics()
+
+        logger.info(
+            "cache_statistics_api",
+            cache_hits=stats.get("cache_hits"),
+            cache_misses=stats.get("cache_misses"),
+            hit_rate=stats.get("hit_rate_percent"),
+        )
+
+        return JSONResponse(content={"enabled": True, **stats})
+
+    except Exception as e:
+        logger.error("cache_statistics_api_failed", error=str(e))
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get cache statistics: {str(e)}"
+        )
+
+
+@router.get(
+    "/efficiency/cache/clear", tags=["Efficiency"], summary="Clear all cached responses"
+)
+async def clear_cache():
+    """
+    Clear all cached responses.
+
+    This endpoint removes all entries from the cache.
+    """
+    try:
+        if not settings.ENABLE_EFFICIENCY_GUARD:
+            return JSONResponse(
+                content={"enabled": False, "message": "Efficiency Guard is disabled"}
+            )
+
+        efficiency_guard = get_efficiency_guard()
+        efficiency_guard.clear_cache()
+
+        logger.info("cache_cleared_api")
+
+        return JSONResponse(
+            content={"success": True, "message": "Cache cleared successfully"}
+        )
+
+    except Exception as e:
+        logger.error("cache_clear_api_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to clear cache: {str(e)}")
+
+
+@router.get(
+    "/efficiency/statistics",
+    tags=["Efficiency"],
+    summary="Get comprehensive efficiency guard statistics",
+)
+async def get_efficiency_statistics():
+    """
+    Get comprehensive efficiency guard statistics.
+
+    Returns detailed statistics about cache, rate limiting, and query patterns.
+    """
+    try:
+        if not settings.ENABLE_EFFICIENCY_GUARD:
+            return JSONResponse(
+                content={"enabled": False, "message": "Efficiency Guard is disabled"}
+            )
+
+        efficiency_guard = get_efficiency_guard()
+        stats = efficiency_guard.get_statistics()
+
+        logger.info(
+            "efficiency_statistics_api",
+            total_requests=stats.get("rate_limit", {}).get("total_requests"),
+            cache_hit_rate=stats.get("performance", {}).get("cache_hit_rate_percent"),
+        )
+
+        return JSONResponse(content={"enabled": True, **stats})
+
+    except Exception as e:
+        logger.error("efficiency_statistics_api_failed", error=str(e))
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get efficiency statistics: {str(e)}"
+        )
+
+
+@router.get(
+    "/efficiency/rate-limit/{identifier}",
+    tags=["Efficiency"],
+    summary="Get rate limit information for an identifier",
+)
+async def get_rate_limit_info(identifier: str):
+    """
+    Get rate limit information for a specific identifier.
+
+    Args:
+        identifier: Unique identifier for the requester (user_id, group_id, etc.)
+
+    Returns:
+        Rate limit information including remaining requests
+    """
+    try:
+        if not settings.ENABLE_EFFICIENCY_GUARD:
+            return JSONResponse(
+                content={"enabled": False, "message": "Efficiency Guard is disabled"}
+            )
+
+        efficiency_guard = get_efficiency_guard()
+        info = efficiency_guard.get_rate_limit_info(identifier)
+
+        logger.info(
+            "rate_limit_info_api",
+            identifier=identifier,
+            remaining=info.get("remaining_requests"),
+            is_allowed=info.get("is_allowed"),
+        )
+
+        return JSONResponse(content={"enabled": True, **info})
+
+    except Exception as e:
+        logger.error("rate_limit_info_api_failed", error=str(e), identifier=identifier)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get rate limit info: {str(e)}"
+        )
+
+
+# ============================================================================
+# [KOL-139] Performance Monitoring Endpoints
+# ============================================================================
+
+@router.get("/metrics", tags=["Monitoring"])
+async def metrics():
+    """
+    Prometheus metrics endpoint.
+    
+    Returns all performance metrics in Prometheus format.
+    """
+    try:
+        monitor = get_monitor()
+        return Response(
+            content=monitor.get_metrics(),
+            media_type=monitor.get_content_type()
+        )
+    except Exception as e:
+        logger.error("metrics_endpoint_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Metrics export failed: {str(e)}")
+
+
+@router.get("/health/monitoring", tags=["Monitoring"])
+async def get_monitoring_status():
+    """Get monitoring service status and dashboard data."""
+    try:
+        monitor = get_monitor()
+        return JSONResponse(content=monitor.get_dashboard_data())
+    except Exception as e:
+        logger.error("monitoring_status_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to get monitoring status: {str(e)}")
+
+
+# ============================================================================
+# [KOL-135] Circuit Breaker Endpoints
+# ============================================================================
+
+@router.get("/health/circuit-breakers", tags=["Monitoring"])
+async def get_circuit_breaker_status():
+    """Get status of all circuit breakers."""
+    try:
+        llm_cb = get_llm_circuit_breaker()
+        return JSONResponse(content={
+            "llm_service": llm_cb.get_metrics()
+        })
+    except Exception as e:
+        logger.error("circuit_breaker_status_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to get circuit breaker status: {str(e)}")
+
+
+# ============================================================================
+# [KOL-136] RAG Re-Ranking Endpoints
+# ============================================================================
+
+@router.get("/health/reranker", tags=["Monitoring"])
+async def get_reranker_status():
+    """Get reranker health and metrics."""
+    try:
+        reranker = get_reranker()
+        return JSONResponse(content=reranker.get_metrics())
+    except Exception as e:
+        logger.error("reranker_status_failed", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to get reranker status: {str(e)}")
+
+
+@router.get(
+    "/efficiency/high-frequency-queries",
+    tags=["Efficiency"],
+    summary="Get most frequently executed queries",
+)
+async def get_high_frequency_queries(
+    limit: int = Query(10, description="Maximum number of queries to return"),
+):
+    """
+    Get the most frequently executed queries.
+
+    This endpoint helps identify which queries are executed most often,
+    which can be useful for optimization and caching strategies.
+
+    Args:
+        limit: Maximum number of queries to return
+
+    Returns:
+        List of high-frequency queries with their counts
+    """
+    try:
+        if not settings.ENABLE_EFFICIENCY_GUARD:
+            return JSONResponse(
+                content={"enabled": False, "message": "Efficiency Guard is disabled"}
+            )
+
+        efficiency_guard = get_efficiency_guard()
+        queries = efficiency_guard.get_high_frequency_queries(limit=limit)
+
+        logger.info("high_frequency_queries_api", limit=limit, count=len(queries))
+
+        return JSONResponse(content={"enabled": True, "queries": queries})
+
+    except Exception as e:
+        logger.error("high_frequency_queries_api_failed", error=str(e))
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get high frequency queries: {str(e)}"
         )

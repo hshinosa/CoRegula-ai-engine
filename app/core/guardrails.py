@@ -10,7 +10,7 @@ Implements safety guardrails for AI responses:
 """
 
 import re
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict, Any
 from dataclasses import dataclass
 from enum import Enum
 
@@ -439,20 +439,37 @@ Mari fokus pada pembelajaran bersama!"""
             reason="no_toxicity"
         )
     
-    def check_output(self, response: str, original_query: str) -> GuardrailResult:
+    def check_output(self, response: str, original_query: str, contexts: Optional[List[Dict[str, Any]]] = None) -> GuardrailResult:
         """
-        Check AI output for safety.
+        Check AI output for safety and grounding.
         
         Args:
             response: Generated response to check
             original_query: Original user query for context
+            contexts: Optional context documents for grounding check
             
         Returns:
             GuardrailResult with action
         """
         response_lower = response.lower()
         
-        # Check if response contains code that might do homework
+        # 1. Grounding Check (Mencegah Halusinasi)
+        if contexts and not self._is_grounded_in(response, contexts):
+            return GuardrailResult(
+                action=GuardrailAction.BLOCK,
+                reason="hallucination_detected",
+                message="Maaf, saya tidak menemukan informasi tersebut di materi kuliah."
+            )
+
+        # 2. Pedagogical Alignment: Direct Answer Detection
+        if self._contains_direct_answer(response):
+             return GuardrailResult(
+                action=GuardrailAction.REDIRECT,
+                reason="direct_answer_detected",
+                message="Berikan petunjuk Socratic, bukan jawaban langsung."
+            )
+
+        # 3. Check if response contains code that might do homework
         if self._contains_complete_solution(response, original_query):
             return GuardrailResult(
                 action=GuardrailAction.REDIRECT,
@@ -460,7 +477,7 @@ Mari fokus pada pembelajaran bersama!"""
                 message="Response contains complete solution, should provide hints instead"
             )
         
-        # Check for PII in response
+        # 4. Check for PII in response
         pii_result = self._check_pii(response)
         if pii_result.action == GuardrailAction.WARN:
             # Sanitize PII from response
@@ -474,7 +491,32 @@ Mari fokus pada pembelajaran bersama!"""
             action=GuardrailAction.ALLOW,
             reason="output_safe"
         )
-    
+
+    def _is_grounded_in(self, response: str, contexts: List[Dict[str, Any]]) -> bool:
+        """Heuristic grounding check: check if key technical terms from response exist in context."""
+        # Simple keyword overlap check for MVP
+        # In production, use a dedicated NLI model or Gemini for grounding
+        context_text = " ".join([c.get("content", "").lower() for c in contexts])
+        
+        # Extract potential technical words (longer than 5 chars)
+        words = re.findall(r'\b\w{6,}\b', response.lower())
+        if not words: return True
+        
+        matches = sum(1 for w in words if w in context_text)
+        overlap_ratio = matches / len(words)
+        
+        return overlap_ratio > 0.2 # Minimum 20% overlap of technical terms
+
+    def _contains_direct_answer(self, response: str) -> bool:
+        """Detect if the bot is giving a direct 'homework-ready' answer."""
+        patterns = [
+            r"jawabannya adalah",
+            r"hasil akhirnya",
+            r"berikut adalah kodenya:",
+            r"ini jawaban untuk tugas Anda"
+        ]
+        return any(re.search(p, response, re.IGNORECASE) for p in patterns)
+
     def _contains_complete_solution(self, response: str, query: str) -> bool:
         """Check if response contains a complete homework solution."""
         # Heuristic: if response contains large code blocks and query was flagged

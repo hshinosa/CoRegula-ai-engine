@@ -1,9 +1,8 @@
 """
-RAG Pipeline Service - MVP Phase 1-1.5
-CoRegula AI Engine
-
+RAG Pipeline Service
+====================
 Combines vector search with LLM for context-aware responses.
-Includes guardrails for safety and academic integrity.
+Includes Policy Agent for retrieval optimization and pedagogical guardrails.
 """
 
 from typing import Optional, List, Dict, Any
@@ -12,8 +11,10 @@ from datetime import datetime
 
 from app.core.logging import get_logger
 from app.core.guardrails import get_guardrails, GuardrailAction
+from app.core.config import settings
 from app.services.vector_store import get_vector_store, VectorStoreService
-from app.services.llm import get_llm_service, GeminiLLMService, LLMResponse, ChatMessage
+from app.services.llm import get_llm_service, OpenAILLMService, LLMResponse, ChatMessage
+from app.services.efficiency_guard import get_efficiency_guard, EfficiencyGuard
 
 logger = get_logger(__name__)
 
@@ -26,6 +27,7 @@ class RAGResult:
     query: str
     tokens_used: int
     success: bool
+    scaffolding_triggered: bool = False
     error: Optional[str] = None
     processing_time_ms: float = 0
 
@@ -60,7 +62,8 @@ class RAGPipeline:
     def __init__(
         self,
         vector_store: Optional[VectorStoreService] = None,
-        llm_service: Optional[GeminiLLMService] = None
+        llm_service: Optional[OpenAILLMService] = None,
+        efficiency_guard: Optional[EfficiencyGuard] = None
     ):
         """
         Initialize RAG pipeline.
@@ -68,13 +71,39 @@ class RAGPipeline:
         Args:
             vector_store: Vector store service instance
             llm_service: LLM service instance
+            efficiency_guard: Efficiency guard for caching and optimization
         """
         self.vector_store = vector_store or get_vector_store()
         self.llm_service = llm_service or get_llm_service()
         self.guardrails = get_guardrails()
-        self._context_history: List[Dict[str, Any]] = []
+        self.efficiency_guard = efficiency_guard or (
+            get_efficiency_guard() if settings.ENABLE_EFFICIENCY_GUARD else None
+        )
         
-        logger.info("rag_pipeline_initialized")
+        # [OPTIMIZATION] Sequential semantic caching
+        self._last_query: Optional[str] = None
+        self._last_contexts: List[Dict[str, Any]] = []
+        self._semantic_threshold = 0.85
+        
+        logger.info("rag_pipeline_initialized", efficiency_enabled=settings.ENABLE_EFFICIENCY_GUARD)
+
+    async def _is_semantically_identical(self, query: str) -> bool:
+        """Check if query is semantically similar to the previous one to reuse context."""
+        if not self._last_query or not self._last_contexts:
+            return False
+        
+        try:
+            from app.services.embeddings import get_embedding_service
+            import numpy as np
+            
+            embedder = get_embedding_service()
+            v1 = await embedder.get_embedding(query)
+            v2 = await embedder.get_embedding(self._last_query)
+            
+            similarity = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+            return similarity > self._semantic_threshold
+        except:
+            return False
     
     def _should_retrieve(self, query: str, context_history: Optional[List[Dict[str, Any]]] = None) -> bool:
         """
@@ -124,10 +153,11 @@ class RAGPipeline:
         collection_name: Optional[str] = None,
         n_results: int = 5,
         chat_history: Optional[List[ChatMessage]] = None,
-        filter_metadata: Optional[Dict[str, Any]] = None
+        filter_metadata: Optional[Dict[str, Any]] = None,
+        fading_level: float = 0.0
     ) -> RAGResult:
         """
-        Execute a RAG query with Policy-Based optimization and guardrails.
+        Execute a RAG query with Policy-Based optimization, guardrails, and efficiency caching.
         
         Args:
             query: User question
@@ -141,152 +171,215 @@ class RAGPipeline:
         """
         start_time = datetime.now()
         
-        try:
-            # Step 0: Guardrails check - validate input
-            guardrail_result = self.guardrails.check_input(query)
-            
-            if guardrail_result.action == GuardrailAction.BLOCK:
-                # Query blocked by guardrails
+        # Build context for caching
+        cache_context = {
+            "collection_name": collection_name,
+            "n_results": n_results,
+            "filter_metadata": filter_metadata
+        }
+        
+        # Define the query execution function
+        async def execute_rag_query():
+            try:
+                # Step 0: Guardrails check - validate input
+                guardrail_result = self.guardrails.check_input(query)
+                
+                if guardrail_result.action == GuardrailAction.BLOCK:
+                    # Query blocked by guardrails
+                    processing_time = (datetime.now() - start_time).total_seconds() * 1000
+                    
+                    logger.warning(
+                        "rag_query_blocked",
+                        reason=guardrail_result.reason,
+                        query=query[:50]
+                    )
+                    
+                    return RAGResult(
+                        answer=guardrail_result.message or "Maaf, saya tidak bisa membantu dengan permintaan tersebut.",
+                        sources=[],
+                        query=query,
+                        tokens_used=0,
+                        success=True,  # Blocked but handled successfully
+                        error=None,
+                        processing_time_ms=processing_time
+                    )
+                
+                # Use sanitized input if available
+                safe_query = guardrail_result.sanitized_input or query
+                
+                # Step 1: Policy decision - FETCH or NO_FETCH
+                should_fetch = self._should_retrieve(safe_query, self._last_contexts)
+                action_taken = "FETCH" if should_fetch else "NO_FETCH"
+                
+                if not should_fetch:
+                    # NO_FETCH: Skip retrieval, use LLM directly
+                    logger.info(
+                        "rag_policy_no_fetch",
+                        query=safe_query[:100],
+                        reason="policy_optimization"
+                    )
+                    
+                    llm_response = await self.llm_service.generate(
+                        prompt=query,
+                        system_prompt="""Anda adalah asisten AI CoRegula.
+Berikan respons yang ramah dan membantu untuk pertanyaan atau sapaan sederhana ini."""
+                    )
+                    
+                    processing_time = (datetime.now() - start_time).total_seconds() * 1000
+                    
+                    return RAGResult(
+                        answer=llm_response.content,
+                        sources=[],
+                        query=query,
+                        tokens_used=llm_response.tokens_used,
+                        success=llm_response.success,
+                        error=llm_response.error,
+                        processing_time_ms=processing_time
+                    )
+                
+                # Step 1: FETCH - Search vector store (with semantic cache optimization)
+                logger.info(
+                    "rag_search_started",
+                    query=query[:100],
+                    collection=collection_name,
+                    action=action_taken
+                )
+                
+                # [OPTIMIZATION] Check if we can reuse previous context
+                if await self._is_semantically_identical(query):
+                    logger.info("rag_semantic_cache_hit", query=query[:50])
+                    contexts = self._last_contexts
+                    search_results = [] # Placeholder since we have contexts
+                else:
+                    search_results = await self.vector_store.search(
+                        query=query,
+                        collection_name=collection_name,
+                        n_results=n_results,
+                        where=filter_metadata
+                    )
+                    
+                    if not search_results:
+                        # No relevant documents found
+                        logger.warning("rag_no_results", query=query[:100])
+                        
+                        # Generate response without context
+                        llm_response = await self.llm_service.generate(
+                            prompt=query,
+                            system_prompt="""Anda adalah asisten AI CoRegula.
+Tidak ada dokumen relevan yang ditemukan untuk pertanyaan ini.
+Berikan jawaban umum yang membantu dan sarankan untuk mengunggah dokumen yang relevan."""
+                        )
+                        
+                        processing_time = (datetime.now() - start_time).total_seconds() * 1000
+                        
+                        return RAGResult(
+                            answer=llm_response.content,
+                            sources=[],
+                            query=query,
+                            tokens_used=llm_response.tokens_used,
+                            success=llm_response.success,
+                            error=llm_response.error,
+                            processing_time_ms=processing_time
+                        )
+                    
+                    # Step 2: Format contexts & Update semantic cache
+                    contexts = self._format_search_results(search_results)
+                    self._last_query = query
+                    self._last_contexts = contexts
+                
+                # Step 3: Generate response with RAG
+                llm_response = await self.llm_service.generate_rag_response(
+                    query=query,
+                    contexts=contexts,
+                    chat_history=chat_history,
+                    fading_level=fading_level
+                )
+                
+                # [NEW] Step 4: Output Guardrails (Grounding & Pedagogy)
+                output_check = self.guardrails.check_output(
+                    response=llm_response.content,
+                    original_query=query,
+                    contexts=contexts
+                )
+                
+                scaffolding_triggered = False
+                if output_check.action == GuardrailAction.BLOCK:
+                    return RAGResult(
+                        answer=output_check.message,
+                        sources=[],
+                        query=query,
+                        tokens_used=llm_response.tokens_used,
+                        success=True,
+                        scaffolding_triggered=True,
+                        processing_time_ms=(datetime.now() - start_time).total_seconds() * 1000
+                    )
+                elif output_check.action == GuardrailAction.REDIRECT:
+                    # Reframe to Socratic
+                    reframed = await self.llm_service.reframe_to_socratic(llm_response.content)
+                    llm_response.content = reframed
+                    scaffolding_triggered = True
+                elif output_check.action == GuardrailAction.SANITIZE:
+                    llm_response.content = output_check.sanitized_input
+
+                # Step 5: Extract sources
+                sources = self._extract_sources(search_results)
+                
                 processing_time = (datetime.now() - start_time).total_seconds() * 1000
                 
-                logger.warning(
-                    "rag_query_blocked",
-                    reason=guardrail_result.reason,
-                    query=query[:50]
+                logger.info(
+                    "rag_query_complete",
+                    query=query[:100],
+                    num_sources=len(sources),
+                    processing_time_ms=processing_time
                 )
                 
                 return RAGResult(
-                    answer=guardrail_result.message or "Maaf, saya tidak bisa membantu dengan permintaan tersebut.",
+                    answer=llm_response.content,
+                    sources=sources,
+                    query=query,
+                    tokens_used=llm_response.tokens_used,
+                    success=llm_response.success,
+                    scaffolding_triggered=scaffolding_triggered,
+                    error=llm_response.error,
+                    processing_time_ms=processing_time
+                )
+                
+            except Exception as e:
+                processing_time = (datetime.now() - start_time).total_seconds() * 1000
+                
+                logger.error(
+                    "rag_query_failed",
+                    error=str(e),
+                    query=query[:100]
+                )
+                
+                return RAGResult(
+                    answer="",
                     sources=[],
                     query=query,
                     tokens_used=0,
-                    success=True,  # Blocked but handled successfully
-                    error=None,
+                    success=False,
+                    error=str(e),
                     processing_time_ms=processing_time
                 )
-            
-            # Use sanitized input if available
-            safe_query = guardrail_result.sanitized_input or query
-            
-            # Step 1: Policy decision - FETCH or NO_FETCH
-            should_fetch = self._should_retrieve(safe_query, self._context_history)
-            action_taken = "FETCH" if should_fetch else "NO_FETCH"
-            
-            if not should_fetch:
-                # NO_FETCH: Skip retrieval, use LLM directly
-                logger.info(
-                    "rag_policy_no_fetch",
-                    query=safe_query[:100],
-                    reason="policy_optimization"
-                )
-                
-                llm_response = await self.llm_service.generate(
-                    prompt=query,
-                    system_prompt="""Anda adalah asisten AI CoRegula.
-Berikan respons yang ramah dan membantu untuk pertanyaan atau sapaan sederhana ini."""
-                )
-                
-                processing_time = (datetime.now() - start_time).total_seconds() * 1000
-                
-                return RAGResult(
-                    answer=llm_response.content,
-                    sources=[],
-                    query=query,
-                    tokens_used=llm_response.tokens_used,
-                    success=llm_response.success,
-                    error=llm_response.error,
-                    processing_time_ms=processing_time
-                )
-            
-            # Step 1: FETCH - Search vector store
-            logger.info(
-                "rag_search_started",
-                query=query[:100],
-                collection=collection_name,
-                action=action_taken
-            )
-            
-            search_results = await self.vector_store.search(
+        
+        # Use Efficiency Guard if enabled
+        if self.efficiency_guard:
+            result_dict = await self.efficiency_guard.execute_with_caching(
                 query=query,
-                collection_name=collection_name,
-                n_results=n_results,
-                where=filter_metadata
+                query_func=execute_rag_query,
+                context=cache_context,
+                ttl_seconds=settings.CACHE_TTL_SECONDS,
+                use_deduplication=True
             )
             
-            if not search_results:
-                # No relevant documents found
-                logger.warning("rag_no_results", query=query[:100])
-                
-                # Generate response without context
-                llm_response = await self.llm_service.generate(
-                    prompt=query,
-                    system_prompt="""Anda adalah asisten AI CoRegula.
-Tidak ada dokumen relevan yang ditemukan untuk pertanyaan ini.
-Berikan jawaban umum yang membantu dan sarankan untuk mengunggah dokumen yang relevan."""
-                )
-                
-                processing_time = (datetime.now() - start_time).total_seconds() * 1000
-                
-                return RAGResult(
-                    answer=llm_response.content,
-                    sources=[],
-                    query=query,
-                    tokens_used=llm_response.tokens_used,
-                    success=llm_response.success,
-                    error=llm_response.error,
-                    processing_time_ms=processing_time
-                )
-            
-            # Step 2: Format contexts
-            contexts = self._format_search_results(search_results)
-            
-            # Step 3: Generate response with RAG
-            llm_response = await self.llm_service.generate_rag_response(
-                query=query,
-                contexts=contexts,
-                chat_history=chat_history
-            )
-            
-            # Step 4: Extract sources
-            sources = self._extract_sources(search_results)
-            
-            processing_time = (datetime.now() - start_time).total_seconds() * 1000
-            
-            logger.info(
-                "rag_query_complete",
-                query=query[:100],
-                num_sources=len(sources),
-                processing_time_ms=processing_time
-            )
-            
-            return RAGResult(
-                answer=llm_response.content,
-                sources=sources,
-                query=query,
-                tokens_used=llm_response.tokens_used,
-                success=llm_response.success,
-                error=llm_response.error,
-                processing_time_ms=processing_time
-            )
-            
-        except Exception as e:
-            processing_time = (datetime.now() - start_time).total_seconds() * 1000
-            
-            logger.error(
-                "rag_query_failed",
-                error=str(e),
-                query=query[:100]
-            )
-            
-            return RAGResult(
-                answer="",
-                sources=[],
-                query=query,
-                tokens_used=0,
-                success=False,
-                error=str(e),
-                processing_time_ms=processing_time
-            )
+            # Convert dict back to RAGResult if needed
+            if isinstance(result_dict, dict):
+                return RAGResult(**result_dict)
+            return result_dict
+        else:
+            # Execute without caching
+            return await execute_rag_query()
     
     async def query_with_course_context(
         self,

@@ -17,6 +17,14 @@ from app.core.config import settings
 def setup_logging() -> None:
     """Configure structured logging for the application."""
     
+    # Fix Windows console encoding issue
+    if sys.platform == 'win32' and 'pytest' not in sys.modules:
+        import io
+        # Set UTF-8 encoding for stdout on Windows
+        if hasattr(sys.stdout, 'buffer') and hasattr(sys.stderr, 'buffer'):
+            sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+            sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    
     # Determine processors based on format
     shared_processors: list[Processor] = [
         structlog.contextvars.merge_contextvars,

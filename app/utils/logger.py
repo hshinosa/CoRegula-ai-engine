@@ -1,17 +1,8 @@
 """
-Event Logger for Educational Process Mining
-CoRegula AI Engine
-
-Records events in a structured format (CaseID, Activity, Timestamp, Resource)
-following Educational Process Mining (EPM) standards for learning analytics.
-
-Output format is compatible with:
-- ProM (Process Mining Framework)
-- Disco (Fluxicon)
-- PM4Py
-- XES format conversion
-
-Reference: Based on EPM log structure for extracting Orchestration Graphs
+Process Mining Event Logger
+===========================
+Structured event logging following Educational Process Mining (EPM) standards.
+Supports XES conversion for analytical tools like ProM and Disco.
 """
 
 import csv
@@ -142,9 +133,9 @@ class ProcessMiningLogger:
         Log an event for process mining.
         
         Args:
-            case_id: ID Kelompok (Group ID / Session ID)
-            activity: Jenis Interaksi (from ActivityType or custom)
-            resource: Pengguna (User ID / Agent ID)
+            case_id: Group or Session identifier
+            activity: Interaction type (from ActivityType or custom)
+            resource: Actor (User ID or Agent ID)
             lifecycle: XES lifecycle state
             course_id: Course/Class identifier
             chat_room_id: Chat room/space identifier
@@ -156,7 +147,7 @@ class ProcessMiningLogger:
             extra_attributes: Additional custom attributes
             
         Returns:
-            EventLogEntry that was recorded
+            EventLogEntry recorded in CSV
         """
         timestamp = datetime.now()
         
@@ -409,9 +400,9 @@ def log_event_for_mining(
     Convenience function for logging events (compatible with research spec).
     
     Args:
-        case_id: ID Kelompok (Group ID)
-        activity: Jenis Interaksi (InteractionType)
-        resource: Pengguna (User ID)
+        case_id: Group/Session ID
+        activity: Interaction Type
+        resource: User/Actor ID
         lifecycle: XES lifecycle (default: complete)
         
     Returns:

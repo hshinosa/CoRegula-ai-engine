@@ -11,9 +11,21 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+reports/
+coverage*.txt
+pytest*.txt
+test_*_out.txt
+failures.txt
+out_*.txt
+
 # Environment Variables
 .env
 
 # Data & Documents
 data/
+docs
 Materi UX.zip

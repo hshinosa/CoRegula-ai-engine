@@ -1,7 +1,8 @@
 """
 Vector Store Service
 ====================
-ChromaDB vector store management with Gemini embeddings.
+Manages ChromaDB collections with persistent storage. 
+Handles document indexing, similarity search, and collection lifecycle.
 """
 
 import asyncio
@@ -30,13 +31,17 @@ from app.services.embeddings import get_embedding_service
 logger = get_logger(__name__)
 
 
-class GeminiEmbeddingFunction:
-    """ChromaDB compatible embedding function using Gemini."""
+class OpenAIEmbeddingFunction:
+    """ChromaDB compatible embedding function using OpenAI Compatible API."""
     
     def __call__(self, input: List[str]) -> List[List[float]]:
         """Generate embeddings for ChromaDB."""
+        import asyncio
         embedding_service = get_embedding_service()
-        return embedding_service.embed_texts(input)
+        
+        # Run async method in event loop
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(embedding_service.embed_texts(input))
 
 
 class VectorStoreService:
@@ -45,7 +50,7 @@ class VectorStoreService:
     def __init__(self):
         """Initialize vector store service."""
         self._client: Optional[chromadb.ClientAPI] = None
-        self._embedding_function = GeminiEmbeddingFunction()
+        self._embedding_function = OpenAIEmbeddingFunction()
         self._collections: Dict[str, chromadb.Collection] = {}
         self._initialized = False
     
